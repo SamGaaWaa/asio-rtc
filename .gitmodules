@@ -1,0 +1,6 @@
+[submodule "third_party/libsrtp"]
+	path = third_party/libsrtp
+	url = https://github.com/cisco/libsrtp.git
+[submodule "third_party/asio-ice"]
+	path = third_party/asio-ice
+	url = git@github.com:SamGaaWaa/asio-ice.git

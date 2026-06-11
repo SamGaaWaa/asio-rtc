@@ -1,0 +1,82 @@
+cmake_minimum_required(VERSION 3.22)
+
+project(asio-rtc)
+
+option(ASIORTC_USE_STANDALONE_ASIO "Uses standalone asio" OFF)
+option(ASIORTC_TEST "Build test" ON)
+# set(STDEXEC_DIR)
+
+set(CMAKE_CXX_STANDARD 23)
+
+find_package(OpenSSL 3 REQUIRED)
+
+set(Boost_DEBUG ON)
+set(Boost_USE_STATIC_LIBS ON)
+find_package(Boost 1.89 CONFIG REQUIRED)
+if(Boost_FOUND)
+    message(STATUS "Boost found")
+endif()
+if(ASIORTC_USE_STANDALONE_ASIO)
+    set(ASIO_STANDALONE ON)
+    find_package(asio CONFIG REQUIRED)
+endif()
+
+set(ASIOICE_ENABLE_SCTP_OVER_DTLS ON)
+add_subdirectory(third_party/asio-ice)
+
+set(CRYPTO_LIBRARY openssl)
+set(LIBSRTP_TEST_APPS OFF)
+add_subdirectory(third_party/libsrtp)
+
+file(GLOB RTC_SRC_FILES 
+    src/asiortc.cpp
+    src/srtp_transport.cpp
+)
+add_library(asiortc STATIC ${RTC_SRC_FILES})
+target_link_libraries(asiortc PRIVATE asioice OpenSSL::SSL OpenSSL::Crypto srtp3)
+target_link_libraries(asiortc PUBLIC Boost::boost)
+if(ASIORTC_USE_STANDALONE_ASIO)
+    target_link_libraries(asiortc PUBLIC asio::asio)
+    target_compile_definitions(asiortc PUBLIC ASIO_STANDALONE)
+endif()
+target_include_directories(asiortc PUBLIC ${STDEXEC_DIR})
+target_include_directories(asiortc PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_include_directories(asiortc PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+add_library(asiortc_compile_flags INTERFACE)
+target_compile_options(asiortc_compile_flags INTERFACE
+                       $<$<COMPILE_LANG_AND_ID:CXX,GNU>:-fconcepts-diagnostics-depth=10 -Wno-non-template-friend -Wall -fcoroutines>
+                       )
+target_compile_options(asiortc_compile_flags INTERFACE
+                       $<$<COMPILE_LANG_AND_ID:CXX,MSVC>:/Zc:__cplusplus /Zc:preprocessor /utf-8 /D_WIN32_WINNT=0x0601 /Zm200 /bigobj /W4 /wd4100 /wd4101 /wd4127 /wd4324 /wd4456 /wd4459>
+                       )
+target_link_libraries(asiortc_compile_flags INTERFACE
+                      $<$<PLATFORM_ID:Windows>:bcrypt;ws2_32;iphlpapi;mswsock>
+                      )
+target_compile_options(asiortc_compile_flags INTERFACE
+                       $<$<AND:$<COMPILE_LANG_AND_ID:CXX,GNU>,$<PLATFORM_ID:Windows>>:-Wa,-mbig-obj>
+                       )
+target_link_libraries(asiortc PRIVATE asiortc_compile_flags)
+
+add_library(asiortc_test_flags INTERFACE)
+target_link_libraries(asiortc_test_flags INTERFACE Boost::boost)
+if(ASIORTC_USE_STANDALONE_ASIO)
+    target_link_libraries(asiortc_test_flags INTERFACE asio::asio)
+    target_compile_definitions(asiortc_test_flags INTERFACE ASIO_STANDALONE)
+endif()
+target_link_libraries(asiortc_test_flags INTERFACE asiortc asiortc_compile_flags)
+target_include_directories(asiortc_test_flags INTERFACE ${STDEXEC_DIR})
+target_include_directories(asiortc_test_flags INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_include_directories(asiortc_test_flags INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(asiortc_test_flags INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/asio-ice/include)
+
+if(ASIORTC_TEST)
+    file(GLOB ASIORTC_TEST_SOURCES
+        src/srtp_test.cpp
+    )
+    foreach(TEST_FILE ${ASIORTC_TEST_SOURCES})
+        get_filename_component(EXECUTABLE_NAME ${TEST_FILE} NAME_WE)
+        add_executable(${EXECUTABLE_NAME} ${TEST_FILE})
+        target_link_libraries(${EXECUTABLE_NAME} PRIVATE asiortc_test_flags OpenSSL::SSL OpenSSL::Crypto srtp3)
+    endforeach()
+endif()

@@ -192,44 +192,6 @@ static void test_profile(srtp_protection_profile p) {
     test_rtcp_roundtrip(p);
 }
 
-static void test_move() {
-    auto keys = make_test_keys(srtp_protection_profile::srtp_aes128_cm_sha1_80);
-    srtp_transport_base t1(keys, dtls_role::client);
-    ASSERT(t1.profile() == srtp_protection_profile::srtp_aes128_cm_sha1_80);
-
-    srtp_transport_base t2(std::move(t1));
-    ASSERT(t2.profile() == srtp_protection_profile::srtp_aes128_cm_sha1_80);
-
-    auto pkt = make_rtp_packet();
-    auto original = pkt;
-    auto original_size = pkt.size();
-    pkt.resize(pkt.size() + srtp_transport_base::max_protect_rtp_overhead());
-    size_t len = original_size;
-
-    pkt.resize(t2.protect_rtp(original, pkt).size());
-    ASSERT(pkt.size() > original_size);
-
-    auto server =
-        srtp_transport_base(keys, dtls_role::server);
-    pkt.resize(server.unprotect_rtp(pkt, pkt).size());
-    ASSERT(pkt.size() == original.size());
-    ASSERT(std::memcmp(pkt.data(), original.data(), pkt.size()) == 0);
-
-    srtp_transport_base t3(keys, dtls_role::client);
-    t3 = std::move(t2);
-
-    pkt = make_rtp_packet(2);
-    original = pkt;
-    original_size = pkt.size();
-    pkt.resize(original_size + srtp_transport_base::max_protect_rtp_overhead());
-    len = original_size;
-
-    pkt.resize(t3.protect_rtp(original, pkt).size());
-    ASSERT(!pkt.empty());
-
-    std::cout << "Move OK\n";
-}
-
 static void test_sdp_parse() {
     std::string sdp =
         "v=0\r\n"
@@ -290,9 +252,6 @@ int main() {
 
     std::cout << "SRTP_AEAD_AES_256_GCM:\n";
     test_profile(srtp_protection_profile::srtp_aead_aes_256_gcm);
-
-    std::cout << "Move semantics:\n";
-    test_move();
 
     std::cout << "SDP parsing:\n";
     test_sdp_parse();

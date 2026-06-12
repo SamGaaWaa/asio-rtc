@@ -65,9 +65,108 @@ When adding SRTP functionality:
 - Header forward-declares asio-ice types (`srtp_key_material`, `dtls_role`, `srtp_protection_profile`); full definitions included only in `.cpp`. `srtp.h` never appears in any header.
 - `remote_sdp` + `parse_remote_sdp()` mirrors the SDP parsing pattern from asio-ice examples for extracting ICE credentials, fingerprint, and setup role.
 
-## Style
+## Style (from asio-ice conventions)
 
 - C++23, coroutines (`-fcoroutines`), P2300 senders/receivers (stdexec)
 - 4-space indent, 80-col suggested
 - `.clang-format` in submodules; no root-level `.clang-format` — don't create one unless asked
 - No comments unless asked
+- **Member naming**: `_prefix` for private members (`_send_session`, `_profile`, `_init_guard`)
+- **Type naming**: `snake_case` (e.g., `srtp_transport_base`, `remote_sdp`, `attr_type_t`)
+- **Include order**: own header first, then project headers, then third-party, then std
+- **`#pragma once`** everywhere; no include guards
+- **File pairs**: private header in `src/` (`.hpp`) + implementation in `src/` (`.cpp`)
+- **Test files**: `*_test.cpp` in `src/`, standalone executables (no framework), exit on failure
+
+## RTP / RTCP packet parsing & serialization
+
+Place new files in `src/` as private implementation headers (`src/rtp.hpp`, `src/rtp.cpp`). Follow the `asioice::stun` pattern: wire-format structs + message struct with `parse()` / `write_to()` / `serialized_size()`.
+
+### Namespace
+`asiortc::rtp` — mirrors `asioice::stun`.
+
+### Wire-format pattern
+```cpp
+#pragma pack(push, 1)
+struct rtp_header_t {
+    uint8_t csrcc : 4;
+    uint8_t extension : 1;
+    uint8_t padding : 1;
+    uint8_t version : 2;
+    // ...
+};
+static_assert(sizeof(rtp_header_t) == 12, "RTP fixed header must be 12 bytes");
+```
+
+Use `static_assert` on every wire-format struct size.
+
+### Byte order
+RTP/RTCP uses big-endian (network byte order). Use these helpers from asio-ice's `third_party/binary.hpp` (include path: `"binary.hpp"`):
+
+```cpp
+#include "binary.hpp"
+// reading
+uint16_t seq = binary::ntoh<uint16_t>(header->sequence_number);
+uint32_t ts  = binary::read_big<uint32_t>(data);
+// writing
+header->type = binary::hton<uint16_t>(200);
+binary::write_big<uint32_t>(dest, ssrc);
+```
+
+### Message struct pattern (from `asioice::stun`)
+```cpp
+struct rtp_packet {
+    // public fields — packet data
+    uint8_t version = 2;
+    uint8_t padding = 0;
+    uint8_t extension = 0;
+    uint8_t csrcc = 0;
+    uint8_t marker = 0;
+    uint8_t payload_type = 0;
+    uint16_t sequence_number = 0;
+    uint32_t timestamp = 0;
+    uint32_t ssrc = 0;
+    // ...
+    std::span<const uint8_t> payload;
+    std::span<const uint8_t> extension_data;
+
+    // parsing
+    static std::optional<rtp_packet> parse(const void *data,
+                                           std::size_t len) noexcept;
+    // serialization
+    int write_to(void *data, std::size_t len) const noexcept;
+    std::size_t serialized_size() const noexcept;
+};
+```
+
+### RTCP compound packets
+RTCP packets are compound (multiple packets in one UDP datagram). Each RTCP sub-packet has its own type byte, length in 32-bit words minus 1, and payload. Use a variant/visitor or iterator pattern:
+
+```cpp
+struct rtcp_packet {
+    uint8_t type;        // SR=200, RR=201, SDES=202, BYE=203, APP=204
+    uint16_t length;     // in 32-bit words minus 1
+    // ... per-type payload
+
+    static std::optional<rtcp_packet> parse(const void *data,
+                                            std::size_t len) noexcept;
+    int write_to(void *data, std::size_t len) const noexcept;
+    std::size_t serialized_size() const noexcept;
+};
+```
+
+### Adding new source / test files
+Update `CMakeLists.txt`:
+- Source files: add to `file(GLOB RTC_SRC_FILES ...)` at line 31
+- Test files: add to `file(GLOB ASIORTC_TEST_SOURCES ...)` at line 74
+
+## Available utilities (from asio-ice)
+
+| Header | What |
+|--------|------|
+| `"binary.hpp"` | `binary::ntoh<T>`, `binary::hton<T>`, `binary::read_big<T>`, `binary::write_big<T>` |
+| `"asioice/detail/scope_guard.hpp"` | `asioice::utils::scope_guard<F>` — RAII cleanup, requires `nothrow_invocable<F>` |
+| `"asioice/endian.hpp"` | `__ICE_LITTLE_ENDIAN__` define |
+| `"json.hpp"` | nlohmann JSON (no path prefix, private include for asioice targets) |
+
+`binary.hpp` is available because asioice's CMake does `target_include_directories(asioice PRIVATE .../third_party)`, and asio-rtc's tests link `asiortc_test_flags` which includes `asioice/include` — but `binary.hpp` lives in `third_party/asio-ice/third_party/`. If needed from asio-rtc source, add the include path in CMakeLists.txt.

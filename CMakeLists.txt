@@ -31,6 +31,8 @@ add_subdirectory(third_party/libsrtp)
 file(GLOB RTC_SRC_FILES 
     src/asiortc.cpp
     src/srtp_transport.cpp
+    src/rtp.cpp
+    src/rtcp.cpp
 )
 add_library(asiortc STATIC ${RTC_SRC_FILES})
 target_link_libraries(asiortc PRIVATE asioice OpenSSL::SSL OpenSSL::Crypto srtp3)
@@ -73,6 +75,7 @@ target_include_directories(asiortc_test_flags INTERFACE ${CMAKE_CURRENT_SOURCE_D
 if(ASIORTC_TEST)
     file(GLOB ASIORTC_TEST_SOURCES
         src/srtp_test.cpp
+        src/rtp_rtcp_test.cpp
     )
     foreach(TEST_FILE ${ASIORTC_TEST_SOURCES})
         get_filename_component(EXECUTABLE_NAME ${TEST_FILE} NAME_WE)
@@ -80,3 +83,5 @@ if(ASIORTC_TEST)
         target_link_libraries(${EXECUTABLE_NAME} PRIVATE asiortc_test_flags OpenSSL::SSL OpenSSL::Crypto srtp3)
     endforeach()
 endif()
+
+add_subdirectory(example/srtp)

@@ -22,6 +22,9 @@ if(ASIORTC_USE_STANDALONE_ASIO)
 endif()
 
 set(ASIOICE_ENABLE_SCTP_OVER_DTLS ON)
+if(ASIORTC_USE_STANDALONE_ASIO)
+    set(ASIOICE_USE_BOOST_ASIO OFF)
+endif()
 add_subdirectory(third_party/asio-ice)
 
 set(CRYPTO_LIBRARY openssl)
@@ -30,9 +33,11 @@ add_subdirectory(third_party/libsrtp)
 
 file(GLOB RTC_SRC_FILES 
     src/asiortc.cpp
+    src/connection_impl.cpp
     src/srtp_transport.cpp
     src/rtp.cpp
     src/rtcp.cpp
+    src/sdp.cpp
 )
 add_library(asiortc STATIC ${RTC_SRC_FILES})
 target_link_libraries(asiortc PRIVATE asioice OpenSSL::SSL OpenSSL::Crypto srtp3)
@@ -67,15 +72,19 @@ if(ASIORTC_USE_STANDALONE_ASIO)
     target_compile_definitions(asiortc_test_flags INTERFACE ASIO_STANDALONE)
 endif()
 target_link_libraries(asiortc_test_flags INTERFACE asiortc asiortc_compile_flags)
+target_compile_definitions(asiortc_test_flags INTERFACE DCSCTP_USE_BOOST_MOVE_ONLY_FUNCTION)
 target_include_directories(asiortc_test_flags INTERFACE ${STDEXEC_DIR})
 target_include_directories(asiortc_test_flags INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_include_directories(asiortc_test_flags INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_include_directories(asiortc_test_flags INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/asio-ice/include)
+target_include_directories(asiortc_test_flags INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/asio-ice/exsctp)
+target_include_directories(asiortc_test_flags INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/asio-ice/exsctp/dcsctp/dcsctp)
 
 if(ASIORTC_TEST)
     file(GLOB ASIORTC_TEST_SOURCES
         src/srtp_test.cpp
         src/rtp_rtcp_test.cpp
+        src/sdp_test.cpp
     )
     foreach(TEST_FILE ${ASIORTC_TEST_SOURCES})
         get_filename_component(EXECUTABLE_NAME ${TEST_FILE} NAME_WE)
@@ -85,3 +94,4 @@ if(ASIORTC_TEST)
 endif()
 
 add_subdirectory(example/srtp)
+add_subdirectory(example/chat)

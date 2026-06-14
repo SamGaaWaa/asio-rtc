@@ -138,7 +138,14 @@ void connection_impl::start_gathering() {
     _gathering_task = stdexec::spawn_future(
         stdexec::starts_on(
             stdexec::inline_scheduler{},
-            exec::finally(this->_agent.gather_candidates(),
+            exec::finally(this->_agent.gather_candidates() |
+                            stdexec::then([this] {
+                                if (!_local_desc)
+                                    return;
+                                for (const auto &c : this->_agent.local_candidates())
+                                    _local_desc->candidates.push_back(
+                                        c.to_sdp());
+                            }),
                           stdexec::just() | stdexec::then([this] {
                               this->_gathering_task.reset();
                               if (_gathering_state ==

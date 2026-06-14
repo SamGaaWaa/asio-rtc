@@ -142,6 +142,12 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
         return _signaling_state.get();
     }
 
+    const session_description *local_description() const noexcept {
+        if (_local_desc)
+            return &*_local_desc;
+        return nullptr;
+    }
+
     asioice::task<session_description> create_offer();
     asioice::task<session_description> create_answer();
 

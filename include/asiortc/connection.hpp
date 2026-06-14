@@ -6,7 +6,7 @@
 
 namespace asiortc {
 
-enum struct ice_connection_state_t: char {
+enum struct ice_connection_state_t : char {
     init,
     checking,
     connected,
@@ -14,11 +14,9 @@ enum struct ice_connection_state_t: char {
     closed
 };
 
-enum struct ice_gathering_state_t: char {
-    init, gathering, complete
-};
+enum struct ice_gathering_state_t : char { init, gathering, complete };
 
-enum struct signaling_state_t: char {
+enum struct signaling_state_t : char {
     stable,
     have_local_offer,
     have_remote_offer,
@@ -27,9 +25,18 @@ enum struct signaling_state_t: char {
     closed
 };
 
+enum struct connection_state_t : char {
+    init,
+    connecting,
+    connected,
+    disconnected,
+    failed,
+    closed
+};
+
 struct connection {
 
-private:
+  private:
     struct connection_impl;
 
     std::shared_ptr<connection_impl> _impl;

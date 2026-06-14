@@ -1,11 +1,5 @@
-#include "asioice/agent.hpp"
-#include "asioice/agent_config.hpp"
-#include "asioice/candidate.hpp"
-#include "asioice/detail/stop_when.hpp"
-#include "asioice/dtls_transport.hpp"
-#include "asioice/socket_transport.hpp"
-#include "asioice/ssl/dtls_config.hpp"
-#include "json.hpp"
+#include "connection_impl.hpp"
+#include "rtp.hpp"
 #include "sdp.hpp"
 #include "srtp_transport.hpp"
 
@@ -26,6 +20,8 @@ namespace websocket = beast::websocket;
 #error "Requires Boost.Asio"
 #endif
 
+#include "json.hpp"
+
 #include <chrono>
 #include <cstring>
 #include <exec/async_scope.hpp>
@@ -43,263 +39,109 @@ using ws_t = websocket::stream<beast::tcp_stream>;
 using ws_ptr = std::shared_ptr<ws_t>;
 static const uint16_t PORT = 8084;
 
-static task<void> ws_send(ws_t& ws, const nlohmann::json& msg) {
-  ws.text(true);
-  auto d = msg.dump();
-  auto [ec, n] =
-      co_await ws.async_write(net::buffer(d), net::as_tuple(utils::use_sender));
-  if (ec)
-    std::cerr << "ws err: " << ec.message() << '\n';
+static task<void> ws_send(ws_t &ws, const nlohmann::json &msg) {
+    ws.text(true);
+    auto d = msg.dump();
+    auto [ec, n] = co_await ws.async_write(net::buffer(d),
+                                           net::as_tuple(utils::use_sender));
+    if (ec)
+        std::cerr << "ws err: " << ec.message() << '\n';
 }
 
-static task<nlohmann::json> ws_recv(ws_t& ws) {
-  beast::flat_buffer buf;
-  auto [ec, n] = co_await ws.async_read(buf, net::as_tuple(utils::use_sender));
-  if (ec)
-    throw std::runtime_error("ws recv: " + ec.message());
-  auto j = nlohmann::json::parse(beast::buffers_to_string(buf.data()));
-  buf.clear();
-  co_return j;
-}
-
-static std::pair<ssl::hash_algorithm, std::string> parse_fingerprint(
-    const std::string& fp_str) {
-  auto space = fp_str.find(' ');
-  if (space == std::string::npos)
-    throw std::runtime_error("bad fingerprint format: " + fp_str);
-  auto algo_name = fp_str.substr(0, space);
-  auto value = fp_str.substr(space + 1);
-  ssl::hash_algorithm algo;
-  if (algo_name == "sha-256")
-    algo = ssl::hash_algorithm::sha256;
-  else if (algo_name == "sha-384")
-    algo = ssl::hash_algorithm::sha384;
-  else if (algo_name == "sha-512")
-    algo = ssl::hash_algorithm::sha512;
-  else if (algo_name == "sha-1")
-    algo = ssl::hash_algorithm::sha1;
-  else
-    throw std::runtime_error("unknown hash: " + algo_name);
-  return {algo, value};
+static task<nlohmann::json> ws_recv(ws_t &ws) {
+    beast::flat_buffer buf;
+    auto [ec, n] =
+        co_await ws.async_read(buf, net::as_tuple(utils::use_sender));
+    if (ec)
+        throw std::runtime_error("ws recv: " + ec.message());
+    auto j = nlohmann::json::parse(beast::buffers_to_string(buf.data()));
+    buf.clear();
+    co_return j;
 }
 
 static std::string srtp_suite_name(ssl::srtp_protection_profile profile) {
-  switch (profile) {
+    switch (profile) {
     case ssl::srtp_protection_profile::srtp_aes128_cm_sha1_80:
-      return "AES_CM_128_HMAC_SHA1_80";
+        return "AES_CM_128_HMAC_SHA1_80";
     case ssl::srtp_protection_profile::srtp_aes128_cm_sha1_32:
-      return "AES_CM_128_HMAC_SHA1_32";
+        return "AES_CM_128_HMAC_SHA1_32";
     case ssl::srtp_protection_profile::srtp_aead_aes_128_gcm:
-      return "AES_128_GCM";
+        return "AES_128_GCM";
     case ssl::srtp_protection_profile::srtp_aead_aes_256_gcm:
-      return "AES_256_GCM";
+        return "AES_256_GCM";
     default:
-      return "unknown";
-  }
-}
-
-static const sdp_media* find_first_media(const session_description& session) {
-  if (!session.medias.empty())
-    return &session.medias[0];
-  return nullptr;
-}
-
-static const std::string& ice_ufrag_from(const session_description& session) {
-  if (!session.ice_ufrag.empty())
-    return session.ice_ufrag;
-  if (auto* m = find_first_media(session))
-    return m->ice_ufrag;
-  static const std::string empty;
-  return empty;
-}
-
-static const std::string& ice_pwd_from(const session_description& session) {
-  if (!session.ice_pwd.empty())
-    return session.ice_pwd;
-  if (auto* m = find_first_media(session))
-    return m->ice_pwd;
-  static const std::string empty;
-  return empty;
-}
-
-static const std::string& fingerprint_from(const session_description& session) {
-  if (!session.fingerprint.empty())
-    return session.fingerprint;
-  if (auto* m = find_first_media(session))
-    return m->fingerprint;
-  static const std::string empty;
-  return empty;
-}
-
-static const std::string& setup_from(const session_description& session) {
-  if (!session.setup.empty())
-    return session.setup;
-  if (auto* m = find_first_media(session))
-    return m->setup;
-  static const std::string empty;
-  return empty;
-}
-
-static std::vector<std::string> candidates_from(
-    const session_description& session) {
-  std::vector<std::string> result = session.candidates;
-  if (auto* m = find_first_media(session))
-    result.insert(result.end(), m->candidates.begin(), m->candidates.end());
-  return result;
-}
-
-static task<void> srtp_session(net::io_context& ctx, ws_ptr ws) {
-  std::cout << "WS connected (asiortc SRTP demo)\n";
-  utils::scheduler sched{ctx};
-
-  ssl::dtls_certificate cert;
-  auto local_fp = cert.get_fingerprint(ssl::hash_algorithm::sha256);
-  std::cout << "DTLS fp: " << local_fp.value << '\n';
-
-  auto msg = co_await ws_recv(*ws);
-  auto offer = parse_sdp(msg["sdp"].get<std::string>());
-  std::cout << "Offer: ufrag=" << ice_ufrag_from(offer)
-            << " fp=" << fingerprint_from(offer)
-            << " cands=" << candidates_from(offer).size()
-            << " medias=" << offer.medias.size() << '\n';
-
-  agent_config cfg = {
-      .username = "asiortc_srtp",
-      .password = "srtp_pwd",
-      .ice_controlling = false,
-      .use_loopback = true,
-      .component_count = 1,
-  };
-  cfg.trickle_ice = false;
-
-  agent ag(ctx.get_executor(), cfg);
-  ag.set_remote_username(ice_ufrag_from(offer));
-  ag.set_remote_password(ice_pwd_from(offer));
-
-  using IceT = agent::ice_transport_type;
-  using DtlsT = ssl::dtls_transport<IceT>;
-
-  auto ice = ag.create_ice_transport(1);
-  auto dtls = std::make_shared<DtlsT>(ice, std::move(cert));
-  auto [algo, fp_val] = parse_fingerprint(fingerprint_from(offer));
-  dtls->set_expected_remote_fingerprint(ssl::fingerprint{algo, fp_val});
-
-  for (const auto& line : candidates_from(offer)) {
-    auto c = candidate::from_sdp(line);
-    if (c)
-      co_await ag.add_remote_candidate(std::move(*c));
-  }
-  co_await ag.add_remote_candidate();
-
-  auto srtp = std::make_shared<srtp_transport<IceT>>(ice);
-
-  net::steady_timer timer(ctx, std::chrono::seconds(5));
-  co_await utils::stop_when(ag.gather_candidates(),
-                            timer.async_wait(utils::use_sender));
-
-  session_description answer;
-  answer.version = 0;
-  answer.origin.username = "-";
-  answer.origin.session_id = 0;
-  answer.origin.session_version = 0;
-  answer.origin.nettype = "IN";
-  answer.origin.addrtype = "IP4";
-  answer.origin.addr = "0.0.0.0";
-  answer.session_name = "-";
-  answer.timing.start = 0;
-  answer.timing.stop = 0;
-  if (!offer.bundle_groups.empty())
-    answer.bundle_groups = offer.bundle_groups;
-  else
-    answer.bundle_groups = {"0"};
-
-  sdp_media answer_video;
-  answer_video.media_type = "video";
-  answer_video.port = 9;
-  answer_video.proto = "UDP/TLS/RTP/SAVPF";
-  answer_video.conn_nettype = "IN";
-  answer_video.conn_addrtype = "IP4";
-  answer_video.conn_addr = "0.0.0.0";
-  if (auto* om = find_first_media(offer)) {
-    answer_video.payload_types = om->payload_types;
-    answer_video.rtpmaps = om->rtpmaps;
-    answer_video.mid = om->mid;
-  }
-  if (answer_video.payload_types.empty())
-    answer_video.payload_types = {97};
-  if (answer_video.rtpmaps.empty())
-    answer_video.rtpmaps = {{97, "VP8", 90000, ""}};
-  if (answer_video.mid.empty())
-    answer_video.mid = "0";
-  answer_video.direction = sdp_direction::sendrecv;
-  answer_video.rtcp_mux = true;
-  answer_video.ice_ufrag = ag.local_username();
-  answer_video.ice_pwd = ag.local_password();
-  answer_video.fingerprint = local_fp.to_sdp();
-  answer_video.setup = "active";
-  for (const auto& c : ag.local_candidates())
-    answer_video.candidates.push_back(c.to_sdp());
-  answer.medias.push_back(std::move(answer_video));
-
-  auto answer_sdp_str = answer.to_string();
-  co_await ws_send(*ws, {{"type", "answer"}, {"sdp", answer_sdp_str}});
-  std::cout << "Sent answer, connecting\n";
-
-  bool connected = co_await ag.connect();
-  if (!connected) {
-    std::cerr << "ICE failed to connect\n";
-    co_return;
-  }
-  std::cout << "ICE connected!\n";
-
-  std::cout << "DTLS handshake (client)...\n";
-  auto hs_ec = co_await dtls->async_handshake(DtlsT::handshake_type::client);
-  if (hs_ec) {
-    std::cerr << "DTLS failed: " << hs_ec.message() << '\n';
-    co_return;
-  }
-  auto remote_fp = dtls->get_remote_fingerprint(ssl::hash_algorithm::sha256);
-  std::cout << "DTLS OK, remote fp: " << remote_fp.value << '\n';
-
-  auto keys = dtls->export_srtp_key_material();
-  if (!keys || keys->profile == ssl::srtp_protection_profile::none) {
-    std::cerr << "No SRTP key material exported\n";
-    co_return;
-  }
-  std::cout << "SRTP profile: " << srtp_suite_name(keys->profile) << '\n'
-            << "  client_write_key: " << keys->client_write_key.size() << "B\n"
-            << "  client_write_salt: " << keys->client_write_salt.size()
-            << "B\n"
-            << "  server_write_key: " << keys->server_write_key.size() << "B\n"
-            << "  server_write_salt: " << keys->server_write_salt.size()
-            << "B\n";
-
-  srtp->setup(*keys, ssl::dtls_role::client);
-
-  std::atomic<int> recv_count{0};
-  srtp->on_new_ssrc([&](uint32_t ssrc, std::span<const uint8_t> data) -> bool {
-    std::cout << "New SSRC: 0x" << std::hex << ssrc << std::dec << '\n';
-    return true;
-  });
-
-  srtp->on_rtp_rtcp_packet([&](io_buffer_ptr buf) {
-    auto pkt = rtp::rtp_packet::parse(buf->data(), buf->size());
-    if (pkt) {
-      int n = ++recv_count;
-      std::cout << "RTP recv #" << n << " SSRC=0x" << std::hex << pkt->ssrc
-                << std::dec << " PT=" << (int)pkt->payload_type
-                << " seq=" << pkt->sequence_number << " ts=" << pkt->timestamp
-                << " marker=" << (int)pkt->marker
-                << " payload=" << pkt->payload.size() << "B\n";
-    } else {
-      std::cout << "RTP parse failed\n";
+        return "unknown";
     }
-  });
+}
 
-  exec::async_scope scope;
+static task<void> srtp_session(net::io_context &ctx, ws_ptr ws) {
+    std::cout << "WS connected (asiortc SRTP demo)\n";
+    utils::scheduler sched{ctx};
 
-  scope.spawn(
-      [&](agent& ag, std::shared_ptr<srtp_transport<IceT>> srtp) -> task<void> {
+    auto msg = co_await ws_recv(*ws);
+    auto offer = parse_sdp(msg["sdp"].get<std::string>(), "offer");
+    std::cout << "Offer: ufrag=" << offer.ice_ufrag
+              << " fp=" << offer.fingerprint
+              << " cands=" << offer.candidates.size()
+              << " medias=" << offer.medias.size() << '\n';
+    for (auto &m : offer.medias)
+        std::cout << "  media: " << m.media_type << " " << m.proto
+                  << " mid=" << m.mid << " pts=" << m.payload_types.size()
+                  << '\n';
+
+    auto conn = std::make_shared<connection_impl>(ctx.get_executor());
+
+    co_await conn->set_remote_description(std::move(offer));
+
+    auto answer = co_await conn->create_answer();
+    auto answer_sdp_str = answer.to_string();
+    co_await ws_send(*ws, {{"type", "answer"}, {"sdp", answer_sdp_str}});
+    std::cout << "Sent answer\n";
+
+    co_await conn->set_local_description(std::move(answer));
+
+    auto srtp = conn->srtp();
+
+    std::atomic<int> recv_count{0};
+    conn->on_new_ssrc([&](uint32_t ssrc, std::span<const uint8_t>) -> bool {
+        std::cout << "New SSRC: 0x" << std::hex << ssrc << std::dec << '\n';
+        return true;
+    });
+
+    conn->on_rtp_rtcp_packet([&](io_buffer_ptr buf) {
+        auto pkt = rtp::rtp_packet::parse(buf->data(), buf->size());
+        if (pkt) {
+            int n = ++recv_count;
+            std::cout << "RTP recv #" << n << " SSRC=0x" << std::hex
+                      << pkt->ssrc << std::dec
+                      << " PT=" << (int)pkt->payload_type
+                      << " seq=" << pkt->sequence_number
+                      << " ts=" << pkt->timestamp
+                      << " marker=" << (int)pkt->marker
+                      << " payload=" << pkt->payload.size() << "B\n";
+        } else {
+            std::cout << "RTP parse failed\n";
+        }
+    });
+
+    std::cout << "Waiting for ICE+DTLS+SRTP setup...\n";
+    for (int i = 0; i < 200 && !srtp; ++i) {
+        net::steady_timer t(ctx, std::chrono::milliseconds(50));
+        co_await t.async_wait(utils::use_sender);
+        srtp = conn->srtp();
+    }
+    if (!srtp) {
+        std::cerr << "SRTP setup timeout\n";
+        co_return;
+    }
+
+    std::cout << "SRTP profile: " << srtp_suite_name(srtp->profile()) << '\n';
+
+    exec::async_scope scope;
+
+    scope.spawn([&](net::io_context &ctx, std::shared_ptr<connection_impl> conn,
+                    std::shared_ptr<connection_impl::srtp_transport_type> srtp)
+                    -> task<void> {
         auto ssrc = 0xDEADBEEF;
         uint16_t seq = 0;
         uint32_t ts = 0;
@@ -309,7 +151,7 @@ static task<void> srtp_session(net::io_context& ctx, ws_ptr ws) {
         original[0] = 0x80;
         original[1] = pt & 0x7F;
         for (size_t i = 12; i < 100; ++i)
-          original[i] = static_cast<uint8_t>(i & 0xFF);
+            original[i] = static_cast<uint8_t>(i & 0xFF);
 
         std::vector<uint8_t> protected_buf(
             original.size() + srtp_transport_base::max_protect_rtp_overhead());
@@ -318,105 +160,106 @@ static task<void> srtp_session(net::io_context& ctx, ws_ptr ws) {
         int send_count = 0;
 
         while (true) {
-          send_timer.expires_after(std::chrono::milliseconds(500));
-          auto [ec] =
-              co_await send_timer.async_wait(net::as_tuple(utils::use_sender));
-          if (ec)
-            break;
+            send_timer.expires_after(std::chrono::milliseconds(500));
+            auto [ec] = co_await send_timer.async_wait(
+                net::as_tuple(utils::use_sender));
+            if (ec)
+                break;
 
-          seq++;
-          ts += 3000;
+            seq++;
+            ts += 3000;
 
-          auto orig = original;
-          orig[2] = static_cast<uint8_t>((seq >> 8) & 0xFF);
-          orig[3] = static_cast<uint8_t>(seq & 0xFF);
-          orig[4] = static_cast<uint8_t>((ts >> 24) & 0xFF);
-          orig[5] = static_cast<uint8_t>((ts >> 16) & 0xFF);
-          orig[6] = static_cast<uint8_t>((ts >> 8) & 0xFF);
-          orig[7] = static_cast<uint8_t>(ts & 0xFF);
-          orig[8] = static_cast<uint8_t>((ssrc >> 24) & 0xFF);
-          orig[9] = static_cast<uint8_t>((ssrc >> 16) & 0xFF);
-          orig[10] = static_cast<uint8_t>((ssrc >> 8) & 0xFF);
-          orig[11] = static_cast<uint8_t>(ssrc & 0xFF);
+            auto orig = original;
+            orig[2] = static_cast<uint8_t>((seq >> 8) & 0xFF);
+            orig[3] = static_cast<uint8_t>(seq & 0xFF);
+            orig[4] = static_cast<uint8_t>((ts >> 24) & 0xFF);
+            orig[5] = static_cast<uint8_t>((ts >> 16) & 0xFF);
+            orig[6] = static_cast<uint8_t>((ts >> 8) & 0xFF);
+            orig[7] = static_cast<uint8_t>(ts & 0xFF);
+            orig[8] = static_cast<uint8_t>((ssrc >> 24) & 0xFF);
+            orig[9] = static_cast<uint8_t>((ssrc >> 16) & 0xFF);
+            orig[10] = static_cast<uint8_t>((ssrc >> 8) & 0xFF);
+            orig[11] = static_cast<uint8_t>(ssrc & 0xFF);
 
-          auto enc = srtp->protect_rtp(orig, protected_buf);
-          if (enc.empty()) {
-            std::cerr << "protect_rtp failed\n";
-            break;
-          }
+            auto enc = srtp->protect_rtp(orig, protected_buf);
+            if (enc.empty()) {
+                std::cerr << "protect_rtp failed\n";
+                break;
+            }
 
-          auto [sec, sn] =
-              co_await ag.sendto(net::buffer(enc.data(), enc.size()), 1);
-          if (sec) {
-            std::cerr << "ICE sendto error: " << sec.message() << '\n';
-            break;
-          }
-          send_count++;
-          if (send_count % 10 == 0)
-            std::cout << "RTP sent " << send_count << '\n';
+            auto [sec, sn] =
+                co_await conn->sendto(net::buffer(enc.data(), enc.size()), 1);
+            if (sec) {
+                std::cerr << "ICE sendto error: " << sec.message() << '\n';
+                break;
+            }
+            send_count++;
+            if (send_count % 10 == 0)
+                std::cout << "RTP sent " << send_count << '\n';
         }
-      }(ag, srtp));
+    }(ctx, conn, srtp));
 
-  std::cout
-      << "SRTP session active, rtp send/rcv in progress (ctrl-c to stop)\n";
-  timer.expires_after(std::chrono::seconds(30));
-  co_await timer.async_wait(utils::use_sender);
+    std::cout << "SRTP session active (ctrl-c to stop)\n";
+    net::steady_timer timer(ctx, std::chrono::seconds(30));
+    co_await timer.async_wait(utils::use_sender);
 
-  scope.request_stop();
-  co_await (scope.on_empty() | stdexec::continues_on(sched));
-  std::cout << "Done. RTP received: " << recv_count << '\n';
+    scope.request_stop();
+    co_await (scope.on_empty() | stdexec::continues_on(sched));
+    std::cout << "Done. RTP received: " << recv_count << '\n';
+
+    co_await conn->close();
 }
 
-static task<void> http_session(net::io_context& ctx,
+static task<void> http_session(net::io_context &ctx,
                                net::ip::tcp::socket sock) {
-  beast::flat_buffer buf;
-  http::request<http::string_body> req;
-  auto [ec, n] = co_await http::async_read(sock, buf, req,
-                                           net::as_tuple(utils::use_sender));
-  if (ec)
-    co_return;
-  if (websocket::is_upgrade(req)) {
-    auto ws = std::make_shared<ws_t>(std::move(sock));
-    ws->set_option(
-        websocket::stream_base::timeout::suggested(beast::role_type::server));
-    auto [wec] =
-        co_await ws->async_accept(req, net::as_tuple(utils::use_sender));
-    if (wec) {
-      std::cerr << "WS handshake failed: " << wec.message() << '\n';
-      co_return;
+    beast::flat_buffer buf;
+    http::request<http::string_body> req;
+    auto [ec, n] = co_await http::async_read(sock, buf, req,
+                                             net::as_tuple(utils::use_sender));
+    if (ec)
+        co_return;
+    if (websocket::is_upgrade(req)) {
+        auto ws = std::make_shared<ws_t>(std::move(sock));
+        ws->set_option(websocket::stream_base::timeout::suggested(
+            beast::role_type::server));
+        auto [wec] =
+            co_await ws->async_accept(req, net::as_tuple(utils::use_sender));
+        if (wec) {
+            std::cerr << "WS handshake failed: " << wec.message() << '\n';
+            co_return;
+        }
+        try {
+            co_await srtp_session(ctx, ws);
+        } catch (const std::exception &e) {
+            std::cerr << "Session error: " << e.what() << '\n';
+        }
+        co_return;
     }
-    try {
-      co_await srtp_session(ctx, ws);
-    } catch (const std::exception& e) {
-      std::cerr << "Session error: " << e.what() << '\n';
-    }
-    co_return;
-  }
-  http::response<http::string_body> res{http::status::ok, req.version()};
-  res.set(http::field::server, "asiortc");
-  res.set(http::field::content_type, "text/plain");
-  res.body() = "OK";
-  res.prepare_payload();
-  co_await http::async_write(sock, res, net::as_tuple(utils::use_sender));
+    http::response<http::string_body> res{http::status::ok, req.version()};
+    res.set(http::field::server, "asiortc");
+    res.set(http::field::content_type, "text/plain");
+    res.body() = "OK";
+    res.prepare_payload();
+    co_await http::async_write(sock, res, net::as_tuple(utils::use_sender));
 }
 
-static task<void> listener(net::io_context& ctx) {
-  net::ip::tcp::acceptor acc(
-      ctx, net::ip::tcp::endpoint(net::ip::make_address("127.0.0.1"), PORT));
-  std::cout << "Server on ws://localhost:" << PORT << "/ws\n";
-  while (true) {
-    auto [ec, sock] =
-        co_await acc.async_accept(net::as_tuple(utils::use_sender));
-    if (ec)
-      continue;
-    exec::start_detached(http_session(ctx, std::move(sock)));
-  }
+static task<void> listener(net::io_context &ctx) {
+    net::ip::tcp::acceptor acc(
+        ctx, net::ip::tcp::endpoint(net::ip::make_address("127.0.0.1"), PORT));
+    std::cout << "Server on ws://localhost:" << PORT << "/ws\n";
+    while (true) {
+        auto [ec, sock] =
+            co_await acc.async_accept(net::as_tuple(utils::use_sender));
+        if (ec)
+            continue;
+        exec::start_detached(http_session(ctx, std::move(sock)));
+    }
 }
 
 int main() {
-  std::cout << std::unitbuf;
-  net::io_context ctx;
-  exec::start_detached(
-      stdexec::starts_on(utils::scheduler{ctx}, listener(ctx)));
-  ctx.run();
+    std::cout << std::unitbuf;
+    net::io_context ctx;
+    exec::start_detached(
+        stdexec::starts_on(utils::scheduler{ctx}, listener(ctx)));
+    ctx.run();
 }

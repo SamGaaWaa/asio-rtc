@@ -75,6 +75,17 @@ candidates_from(const session_description &sdp) {
     return result;
 }
 
+static bool ice_options_trickle_from(const session_description &sdp) {
+    for (const auto &[name, value] : sdp.attributes)
+        if (name == "ice-options" && value == "trickle")
+            return true;
+    for (const auto &m : sdp.medias)
+        for (auto &[name, value] : m.attributes)
+            if (name == "ice-options" && value == "trickle")
+                return true;
+    return false;
+}
+
 static asioice::agent_config get_agent_config(asiortc::configuration &&cfg) {
     asioice::agent_config ret{};
     ret.username = asioice::utils::random_string(8);
@@ -100,6 +111,9 @@ asioice::task<void> connection_impl::apply_descriptions() {
         co_return;
     _roles_set = true;
 
+    bool remote_support_trickle_ice = ice_options_trickle_from(*_remote_desc);
+    _agent.config().trickle_ice = remote_support_trickle_ice;
+
     auto ufrag = ice_ufrag_from(*_remote_desc);
     auto pwd = ice_pwd_from(*_remote_desc);
     if (!ufrag.empty())
@@ -117,8 +131,11 @@ asioice::task<void> connection_impl::apply_descriptions() {
         _dtls_transport->set_expected_remote_fingerprint(std::move(*remote_fp));
 
     auto candidate_lines = candidates_from(*_remote_desc);
-    if (candidate_lines.empty())
+    if (candidate_lines.empty()) {
+        if (!remote_support_trickle_ice)
+            co_await _agent.add_remote_candidate();
         co_return;
+    }
     exec::async_scope scope;
     for (const auto &line : candidate_lines) {
         auto c = asioice::candidate::from_sdp(line);
@@ -129,6 +146,8 @@ asioice::task<void> connection_impl::apply_descriptions() {
     }
     co_await (asioice::utils::on_scope_empty(scope) |
               stdexec::continues_on(asioice::utils::scheduler{_executor}));
+    if (!remote_support_trickle_ice)
+        co_await _agent.add_remote_candidate();
 }
 
 void connection_impl::start_gathering() {
@@ -138,21 +157,18 @@ void connection_impl::start_gathering() {
     _gathering_task = stdexec::spawn_future(
         stdexec::starts_on(
             stdexec::inline_scheduler{},
-            exec::finally(this->_agent.gather_candidates() |
-                            stdexec::then([this] {
-                                if (!_local_desc)
-                                    return;
-                                for (const auto &c : this->_agent.local_candidates())
-                                    _local_desc->candidates.push_back(
-                                        c.to_sdp());
-                            }),
-                          stdexec::just() | stdexec::then([this] {
-                              this->_gathering_task.reset();
-                              if (_gathering_state ==
-                                  ice_gathering_state_t::gathering)
-                                  _gathering_state =
-                                      ice_gathering_state_t::complete;
-                          }))),
+            exec::finally(
+                this->_agent.gather_candidates() | stdexec::then([this] {
+                    if (!_local_desc)
+                        return;
+                    for (const auto &c : this->_agent.local_candidates())
+                        _local_desc->candidates.push_back(c.to_sdp());
+                }),
+                stdexec::just() | stdexec::then([this] {
+                    this->_gathering_task.reset();
+                    if (_gathering_state == ice_gathering_state_t::gathering)
+                        _gathering_state = ice_gathering_state_t::complete;
+                }))),
         _scope.get_token());
 }
 
@@ -357,6 +373,8 @@ asioice::task<session_description> connection_impl::create_offer() {
         offer.medias.push_back(std::move(app));
     }
 
+    offer.attributes.emplace_back("ice-options", "trickle");
+
     co_return offer;
 }
 
@@ -416,6 +434,9 @@ asioice::task<session_description> connection_impl::create_answer() {
 
         answer.medias.push_back(std::move(answer_media));
     }
+
+    if (ice_options_trickle_from(*_remote_desc))
+        answer.attributes.emplace_back("ice-options", "trickle");
 
     co_return answer;
 }

@@ -76,6 +76,10 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
 
     executor_type get_executor() const { return _executor; }
 
+    bool can_trickle_ice_candidates() const noexcept {
+        return _agent.config().trickle_ice;
+    }
+
     ice_connection_state_t ice_connection_state() const noexcept {
         return to_ice_connection_state(_agent.state());
     }

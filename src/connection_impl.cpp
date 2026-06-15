@@ -428,7 +428,6 @@ asioice::task<session_description> connection_impl::create_answer() {
             answer_media.rtpmaps = rm.rtpmaps;
             answer_media.fmtps = rm.fmtps;
             answer_media.extmaps = rm.extmaps;
-            answer_media.ssrcs = rm.ssrcs;
             answer_media.msid = rm.msid;
         }
 

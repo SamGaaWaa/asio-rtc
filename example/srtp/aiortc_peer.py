@@ -119,11 +119,11 @@ async def main(server="ws://localhost:8084/ws"):
         print(f"Remote track received: {track.kind}")
         asyncio.ensure_future(consume_remote(track, recv_count))
 
-    @pc.on("iceconnectionstatechange")
-    async def on_ice_state():
-        state = pc.iceConnectionState
-        print(f"ICE state: {state}")
-        if state in ("connected", "completed", "failed", "disconnected"):
+    @pc.on("connectionstatechange")
+    async def on_connection_state():
+        state = pc.connectionState
+        print(f"Peer connection state: {state}")
+        if state in ("connected", "failed"):
             pc_complete.set()
 
     offer = await pc.createOffer()
@@ -141,10 +141,12 @@ async def main(server="ws://localhost:8084/ws"):
         RTCSessionDescription(sdp=msg["sdp"], type="answer")
     )
 
-    print("Waiting for ICE connection...")
+    print("Waiting for peer connection...")
     while not pc_complete.is_set():
         await asyncio.sleep(1)
-    print(f"Final ICE state: {pc.iceConnectionState}")
+    print(f"Final connection state: {pc.iceConnectionState}")
+
+    dump_srtp_keys(pc)
 
     print("Running for 20 seconds...")
     await asyncio.sleep(20)

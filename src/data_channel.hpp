@@ -30,16 +30,16 @@ struct data_channel {
                 net::ip::udp::socket>::ice_transport_type>>>::data_channel;
     using message = asioice::data_channel_message;
     using options = asioice::data_channel_options;
-    using state_t = typename asioice_dc::state_t;
+    using ready_state_t = typename asioice_dc::state_t;
     using data_channel_priority = asioice::impl::data_channel_priority;
 
     uint16_t stream_id() const noexcept { return _options.stream_id; }
     const std::string &label() const noexcept { return _label; }
     const std::string &protocol() const noexcept { return _options.protocol; }
     bool ordered() const noexcept { return _options.ordered; }
-    state_t state() const noexcept {
+    ready_state_t state() const noexcept {
         if (!_channel)
-            return state_t::connecting;
+            return ready_state_t::connecting;
         return _channel->state();
     }
     data_channel_priority priority() const noexcept {

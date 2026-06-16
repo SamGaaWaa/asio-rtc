@@ -38,6 +38,7 @@ file(GLOB RTC_SRC_FILES
     src/rtp.cpp
     src/rtcp.cpp
     src/sdp.cpp
+    src/rtp_transceiver.cpp
 )
 add_library(asiortc STATIC ${RTC_SRC_FILES})
 target_link_libraries(asiortc PRIVATE asioice OpenSSL::SSL OpenSSL::Crypto srtp3)
@@ -95,3 +96,4 @@ endif()
 
 add_subdirectory(example/srtp)
 add_subdirectory(example/chat)
+add_subdirectory(example/transceiver_test)

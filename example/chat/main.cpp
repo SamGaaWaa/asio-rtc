@@ -36,6 +36,10 @@ asioice::task<void> co_main(net::io_context &ctx) {
     configuration cfg;
     auto offerer = std::make_shared<connection_impl>(ctx.get_executor(), cfg);
     auto answerer = std::make_shared<connection_impl>(ctx.get_executor(), cfg);
+    utils::scope_guard auto_close([&]() noexcept {
+        offerer->close();
+        answerer->close();
+    });
 
     std::deque<std::string> offer_cands;
     std::deque<std::string> answer_cands;
@@ -177,8 +181,6 @@ asioice::task<void> co_main(net::io_context &ctx) {
         scope.request_stop();
     }
 END:
-    co_await offerer->close();
-    co_await answerer->close();
     co_await (utils::on_scope_empty(scope) |
               stdexec::continues_on(utils::scheduler{ctx}));
 }

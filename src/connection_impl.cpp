@@ -1,5 +1,6 @@
 #include "connection_impl.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <exec/async_scope.hpp>
 #include <exec/finally.hpp>
@@ -324,10 +325,28 @@ connection_impl::set_remote_description(session_description desc) {
     }
     bool is_offer = (desc.type == "offer");
     _remote_desc = std::move(desc);
-    if (is_offer)
+    if (is_offer) {
         _signaling_state = signaling_state_t::have_remote_offer;
-    else
+        for (const auto &rm : _remote_desc->medias) {
+            if (rm.media_type == "application")
+                continue;
+            auto it =
+                std::find_if(_transceivers.begin(), _transceivers.end(),
+                             [&](const auto &t) { return t->mid() == rm.mid; });
+            if (it == _transceivers.end()) {
+                auto tr = std::make_shared<rtp_transceiver>(
+                    weak_from_this(), rm.mid, sdp_direction::recvonly);
+                tr->wire_back_references();
+                tr->set_codecs(rm.rtpmaps);
+                tr->set_msid(rm.msid);
+                _transceivers.push_back(std::move(tr));
+            } else {
+                (*it)->from_remote_sdp(rm);
+            }
+        }
+    } else {
         _signaling_state = signaling_state_t::have_remote_pranswer;
+    }
 
     co_await apply_descriptions();
     start_connecting();
@@ -352,15 +371,16 @@ asioice::task<session_description> connection_impl::create_offer() {
     offer.session_name = "-";
     offer.timing.start = 0;
     offer.timing.stop = 0;
-    offer.bundle_groups = {"0"};
     offer.ice_ufrag = _agent.local_username();
     offer.ice_pwd = _agent.local_password();
     offer.fingerprint = fp.to_sdp();
     offer.setup = "actpass";
 
+    int mid_counter = 0;
+
     if (_need_sctp) {
         sdp_media app;
-        app.mid = "0";
+        app.mid = std::to_string(mid_counter);
         app.media_type = "application";
         app.port = 9;
         app.proto = "UDP/DTLS/SCTP";
@@ -371,7 +391,23 @@ asioice::task<session_description> connection_impl::create_offer() {
         app.sctpmap = "webrtc-datachannel";
         app.sctp_port = 5000;
         offer.medias.push_back(std::move(app));
+        ++mid_counter;
     }
+
+    for (auto &t : _transceivers) {
+        if (t->mid().empty())
+            t->set_mid(std::to_string(mid_counter));
+        auto media = t->to_offer_sdp_media();
+        media.ice_ufrag = offer.ice_ufrag;
+        media.ice_pwd = offer.ice_pwd;
+        media.fingerprint = offer.fingerprint;
+        media.setup = offer.setup;
+        offer.medias.push_back(std::move(media));
+        ++mid_counter;
+    }
+
+    for (int i = 0; i < mid_counter; ++i)
+        offer.bundle_groups.push_back(std::to_string(i));
 
     offer.attributes.emplace_back("ice-options", "trickle");
 
@@ -409,28 +445,40 @@ asioice::task<session_description> connection_impl::create_answer() {
     answer.setup = we_are_active ? "active" : "passive";
 
     for (const auto &rm : _remote_desc->medias) {
+        if (rm.media_type == "application") {
+            sdp_media answer_media;
+            answer_media.mid = rm.mid;
+            answer_media.media_type = rm.media_type;
+            answer_media.port = 9;
+            answer_media.proto = rm.proto;
+            answer_media.conn_nettype = "IN";
+            answer_media.conn_addrtype = "IP4";
+            answer_media.conn_addr = "0.0.0.0";
+            answer_media.direction = rm.direction;
+            answer_media.sctpmap = rm.sctpmap;
+            answer_media.sctp_port = rm.sctp_port;
+            answer.medias.push_back(std::move(answer_media));
+            continue;
+        }
+
+        auto it = std::find_if(
+            _transceivers.begin(), _transceivers.end(),
+            [&mid = rm.mid](const auto &t) { return t->mid() == mid; });
+
         sdp_media answer_media;
-        answer_media.mid = rm.mid;
-        answer_media.media_type = rm.media_type;
-        answer_media.port = 9;
-        answer_media.proto = rm.proto;
+        if (it != _transceivers.end()) {
+            answer_media = (*it)->to_answer_sdp_media(rm);
+        } else {
+            answer_media.mid = rm.mid;
+            answer_media.media_type = rm.media_type;
+            answer_media.port = 0;
+            answer_media.proto = rm.proto;
+            answer_media.direction = sdp_direction::inactive;
+        }
+
         answer_media.conn_nettype = "IN";
         answer_media.conn_addrtype = "IP4";
         answer_media.conn_addr = "0.0.0.0";
-        answer_media.direction = rm.direction;
-        answer_media.rtcp_mux = rm.rtcp_mux;
-
-        if (rm.media_type == "application") {
-            answer_media.sctpmap = rm.sctpmap;
-            answer_media.sctp_port = rm.sctp_port;
-        } else {
-            answer_media.payload_types = rm.payload_types;
-            answer_media.rtpmaps = rm.rtpmaps;
-            answer_media.fmtps = rm.fmtps;
-            answer_media.extmaps = rm.extmaps;
-            answer_media.msid = rm.msid;
-        }
-
         answer.medias.push_back(std::move(answer_media));
     }
 
@@ -453,8 +501,17 @@ connection_impl::create_data_channel(std::string label,
         weak_from_this(), std::move(label), std::move(options)));
 }
 
-asioice::task<void> connection_impl::close() {
-    // _scope.request_stop();
+std::shared_ptr<rtp_transceiver>
+connection_impl::add_transceiver(std::string mid, sdp_direction direction) {
+    auto t = std::make_shared<rtp_transceiver>(weak_from_this(), std::move(mid),
+                                               direction);
+    t->wire_back_references();
+    _transceivers.push_back(std::move(t));
+    return t;
+}
+
+void connection_impl::close() noexcept {
+    _scope.request_stop();
     _connection_state = connection_state_t::closed;
     _agent.close();
     if (_data_channel_manager)
@@ -463,6 +520,10 @@ asioice::task<void> connection_impl::close() {
     _dtls_transport.reset();
     _srtp_transport.reset();
     _sctp_transport.reset();
+
+    for (auto &t : _transceivers)
+        t->stop();
+    _transceivers.clear();
 
     _local_desc.reset();
     _remote_desc.reset();
@@ -473,20 +534,12 @@ asioice::task<void> connection_impl::close() {
 
     _on_remote_channel_cb = nullptr;
 
-    // asioice::utils::detached_with_data(
-    //     stdexec::continues_on(
-    //         stdexec::starts_on(
-    //             stdexec::inline_scheduler{},
-    //             _scope.join() |
-    //             stdexec::continues_on(asioice::utils::scheduler{_executor})
-    //         ),
-    //         asioice::utils::scheduler{_executor}
-    //     ),
-    //     this->shared_from_this()
-    // );
-
-    co_await (stdexec::starts_on(stdexec::inline_scheduler{}, _scope.join()) |
-              stdexec::continues_on(asioice::utils::scheduler{_executor}));
+    asioice::utils::detached_with_data(
+        stdexec::starts_on(
+            stdexec::inline_scheduler{},
+            _scope.join() |
+                stdexec::continues_on(asioice::utils::scheduler{_executor})),
+        this->shared_from_this());
 }
 
 void connection_impl::on_remote_channel(on_data_channel_cb cb) {

@@ -10,9 +10,10 @@
 #include "asioice/ssl/dtls_config.hpp"
 #include "asioice/task.hpp"
 #include "asiortc/connection.hpp"
+#include "data_channel.hpp"
+#include "rtp_transceiver.hpp"
 #include "sdp.hpp"
 #include "srtp_transport.hpp"
-#include "data_channel.hpp"
 
 #if ASIOICE_USE_BOOST_ASIO > 0
 #include <boost/asio/ip/udp.hpp>
@@ -159,6 +160,13 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
     create_data_channel(std::string label,
                         asiortc::data_channel::options options = {});
 
+    std::shared_ptr<rtp_transceiver>
+    add_transceiver(std::string mid,
+                    sdp_direction direction = sdp_direction::sendrecv);
+
+    const auto &transceivers() const noexcept { return _transceivers; }
+    auto &transceivers() noexcept { return _transceivers; }
+
     asioice::task<void> set_local_description(session_description desc);
     asioice::task<void> set_remote_description(session_description desc);
 
@@ -172,7 +180,7 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
         return _agent.sendto(data, component);
     }
 
-    asioice::task<void> close();
+    void close() noexcept;
     void on_remote_channel(on_data_channel_cb cb);
 
   private:
@@ -195,6 +203,8 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
     std::shared_ptr<srtp_transport_type> _srtp_transport{};
     std::shared_ptr<sctp_transport_type> _sctp_transport{};
     std::optional<datachannel_manager_type> _data_channel_manager{};
+
+    std::vector<std::shared_ptr<rtp_transceiver>> _transceivers{};
 
     std::optional<session_description> _local_desc{};
     std::optional<session_description> _remote_desc{};

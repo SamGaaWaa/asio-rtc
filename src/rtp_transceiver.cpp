@@ -15,12 +15,26 @@ static sdp_direction negotiate_direction(sdp_direction local,
     if (local == sendrecv)
         return remote;
     if (local == sendonly)
-        return (remote == recvonly || remote == sendrecv) ? sendonly
-                                                          : inactive;
+        return (remote == recvonly || remote == sendrecv) ? sendonly : inactive;
     if (local == recvonly)
-        return (remote == sendonly || remote == sendrecv) ? recvonly
-                                                          : inactive;
+        return (remote == sendonly || remote == sendrecv) ? recvonly : inactive;
     return inactive;
+}
+
+std::vector<sdp_codec> default_video_codecs() {
+    return {
+        {96, "VP8", 90000, ""},
+        {97, "rtx", 90000, "apt=96"},
+        {98, "H264", 90000, ""},
+        {99, "rtx", 90000, "apt=98"},
+    };
+}
+
+std::vector<sdp_codec> default_audio_codecs() {
+    return {
+        {111, "opus", 48000, "2"},
+        {63, "telephone-event", 8000, ""},
+    };
 }
 
 static std::string infer_media_type(const std::vector<sdp_codec> &codecs) {
@@ -36,15 +50,6 @@ static std::string infer_media_type(const std::vector<sdp_codec> &codecs) {
         name == "L16" || name == "L24")
         return "audio";
     return "application";
-}
-
-rtp_transceiver::rtp_transceiver(std::weak_ptr<connection_impl> conn,
-                                 std::string mid, sdp_direction direction)
-    : _mid{std::move(mid)}, _direction{direction}, _conn{std::move(conn)} {
-    _sender = std::make_shared<rtp_sender>();
-    _receiver = std::make_shared<rtp_receiver>();
-    _sender->_mid = _mid;
-    _receiver->_mid = _mid;
 }
 
 void rtp_transceiver::wire_back_references() {
@@ -76,7 +81,7 @@ sdp_media rtp_transceiver::to_offer_sdp_media() const {
     m.conn_addr = "0.0.0.0";
     m.direction = _direction;
     m.rtcp_mux = true;
-    m.msid = _msid;
+    m.msids = _sender->_msids;
 
     for (const auto &c : _codecs) {
         m.payload_types.push_back(c.payload_type);
@@ -95,7 +100,7 @@ sdp_media rtp_transceiver::to_answer_sdp_media(const sdp_media &remote) const {
     m.conn_addrtype = "IP4";
     m.conn_addr = "0.0.0.0";
     m.rtcp_mux = remote.rtcp_mux;
-    m.msid = _msid;
+    m.msids = remote.msids;
 
     if (_stopped) {
         m.port = 0;
@@ -142,7 +147,7 @@ sdp_media rtp_transceiver::to_answer_sdp_media(const sdp_media &remote) const {
             }
         }
         m.extmaps = remote.extmaps;
-        m.msid = _msid;
+        m.msids = remote.msids;
     }
 
     return m;
@@ -151,6 +156,8 @@ sdp_media rtp_transceiver::to_answer_sdp_media(const sdp_media &remote) const {
 void rtp_transceiver::from_remote_sdp(const sdp_media &remote) {
     if (!remote.mid.empty())
         _mid = remote.mid;
+
+    _direction = negotiate_direction(_direction, remote.direction);
 
     if (_receiver) {
         _receiver->_parameters.header_extensions = remote.extmaps;

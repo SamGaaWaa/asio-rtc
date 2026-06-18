@@ -77,30 +77,26 @@ static std::string srtp_suite_name(ssl::srtp_protection_profile profile) {
 
 static void setup_transceivers(connection_impl &conn) {
     {
-        auto audio = std::make_shared<rtp_transceiver>(
-            conn.weak_from_this(), "0", sdp_direction::sendrecv);
-        audio->wire_back_references();
+        auto audio = conn.add_transceiver(
+            media_kind::audio, {.direction = sdp_direction::sendrecv,
+                                .streams = {"asiortc-audio audio0"}});
         audio->set_codecs({
             {111, "opus", 48000, "2"},
             {63, "telephone-event", 8000, ""},
         });
-        audio->set_msid("asiortc-audio audio0");
-        conn.transceivers().push_back(audio);
         std::cout << "Added audio transceiver mid=" << audio->mid()
                   << " dir=" << (int)audio->direction()
                   << " codecs=" << audio->codecs().size() << '\n';
     }
 
     {
-        auto video = std::make_shared<rtp_transceiver>(
-            conn.weak_from_this(), "1", sdp_direction::sendrecv);
-        video->wire_back_references();
+        auto video = conn.add_transceiver(
+            media_kind::video, {.direction = sdp_direction::sendrecv,
+                                .streams = {"asiortc-video video0"}});
         video->set_codecs({
             {96, "VP8", 90000, ""},
             {97, "rtx", 90000, "apt=96"},
         });
-        video->set_msid("asiortc-video video0");
-        conn.transceivers().push_back(video);
         std::cout << "Added video transceiver mid=" << video->mid()
                   << " dir=" << (int)video->direction()
                   << " codecs=" << video->codecs().size() << '\n';

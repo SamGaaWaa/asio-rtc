@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstring>
 #include <exec/async_scope.hpp>
 #include <exec/finally.hpp>
 #include <stdexcept>
@@ -9,12 +10,15 @@
 
 #include "asioice/agent_config.hpp"
 #include "asioice/candidate.hpp"
+#include "asioice/detail/binary.hpp"
 #include "asioice/detail/detached_with_data.hpp"
 #include "asioice/detail/ignore.hpp"
 #include "asioice/detail/on_scope_empty.hpp"
 #include "asioice/detail/stop_when.hpp"
 #include "asioice/detail/string_utils.hpp"
 #include "asioice/sctp_transport.hpp"
+#include "media_track_impl.hpp"
+#include "rtp.hpp"
 
 namespace asiortc {
 
@@ -85,6 +89,44 @@ static bool ice_options_trickle_from(const session_description &sdp) {
             if (name == "ice-options" && value == "trickle")
                 return true;
     return false;
+}
+
+asioice::task<void>
+connection_impl::_sender_send_loop(std::weak_ptr<rtp_sender> weak_sender,
+                                   std::shared_ptr<srtp_transport_type> srtp) {
+
+    std::vector<uint8_t> enc_buf;
+
+    while (true) {
+        auto sender = weak_sender.lock();
+        if (!sender || sender->stopped())
+            co_return;
+
+        auto track = sender->track();
+        if (!track)
+            co_return;
+
+        auto frame = co_await track->recv();
+        if (!frame)
+            co_return;
+
+        std::vector<uint8_t> rtp_buf(12 + frame->data.size());
+        rtp_buf[0] = 0x80;
+        rtp_buf[1] = frame->payload_type | (frame->marker ? 0x80 : 0);
+        uint16_t seq = ++sender->_seq;
+        asioice::binary::write_big<uint16_t>(rtp_buf.data() + 2, seq);
+        asioice::binary::write_big<uint32_t>(rtp_buf.data() + 4,
+                                             frame->timestamp);
+        asioice::binary::write_big<uint32_t>(rtp_buf.data() + 8, frame->ssrc);
+        std::memcpy(rtp_buf.data() + 12, frame->data.data(),
+                    frame->data.size());
+
+        enc_buf.resize(rtp_buf.size() +
+                       srtp_transport_base::max_protect_rtp_overhead());
+        auto send_result = co_await srtp->send_rtp(rtp_buf, enc_buf);
+        if (std::get<0>(send_result))
+            co_return;
+    }
 }
 
 static asioice::agent_config get_agent_config(asiortc::configuration &&cfg) {
@@ -236,12 +278,65 @@ asioice::task<void> connection_impl::do_connect() {
             auto srtp_role = we_are_active ? asioice::ssl::dtls_role::client
                                            : asioice::ssl::dtls_role::server;
             _srtp_transport->setup(*keys, srtp_role);
-            if (_pending_srtp_new_ssrc_cb)
-                _srtp_transport->on_new_ssrc(
-                    std::move(_pending_srtp_new_ssrc_cb));
-            if (_pending_srtp_rtp_cb)
-                _srtp_transport->on_rtp_rtcp_packet(
-                    std::move(_pending_srtp_rtp_cb));
+
+            auto user_new_ssrc = std::move(_pending_srtp_new_ssrc_cb);
+            auto user_rtp = std::move(_pending_srtp_rtp_cb);
+
+            _srtp_transport->on_new_ssrc(
+                [this, user_cb = std::move(user_new_ssrc)](
+                    uint32_t ssrc,
+                    std::span<const uint8_t> data) mutable -> bool {
+                    auto pkt = rtp::rtp_packet::parse(data.data(), data.size());
+                    if (pkt) {
+                        for (auto &t : _transceivers) {
+                            for (auto &c : t->codecs()) {
+                                if (c.payload_type == pkt->payload_type) {
+                                    auto recv = t->receiver();
+                                    auto track = recv ? recv->track() : nullptr;
+                                    if (track) {
+                                        _ssrc_track_map[ssrc] =
+                                            std::static_pointer_cast<
+                                                media_track_impl>(track);
+                                    }
+                                    goto ssrc_done;
+                                }
+                            }
+                        }
+                    }
+                ssrc_done:
+                    if (user_cb)
+                        return user_cb(ssrc, data);
+                    return true;
+                });
+
+            _srtp_transport->on_rtp_rtcp_packet(
+                [this, user_cb = std::move(user_rtp)](
+                    asioice::io_buffer_ptr buf) mutable {
+                    auto pkt = rtp::rtp_packet::parse(buf->data(), buf->size());
+                    if (pkt) {
+                        auto it = _ssrc_track_map.find(pkt->ssrc);
+                        if (it != _ssrc_track_map.end()) {
+                            auto hdr_len = pkt->serialized_size();
+                            auto payload_start =
+                                reinterpret_cast<const uint8_t *>(buf->data()) +
+                                hdr_len;
+                            auto payload_len = buf->size() - hdr_len;
+
+                            media_frame frame;
+                            frame.kind = it->second->kind();
+                            frame.ssrc = pkt->ssrc;
+                            frame.timestamp = pkt->timestamp;
+                            frame.payload_type = pkt->payload_type;
+                            frame.marker = pkt->marker;
+                            frame.data.assign(payload_start,
+                                              payload_start + payload_len);
+                            it->second->push_frame(std::move(frame));
+                        }
+                    }
+                    if (user_cb)
+                        user_cb(std::move(buf));
+                });
+            _start_sender_loops();
         }
     }
 
@@ -334,12 +429,26 @@ connection_impl::set_remote_description(session_description desc) {
                 std::find_if(_transceivers.begin(), _transceivers.end(),
                              [&](const auto &t) { return t->mid() == rm.mid; });
             if (it == _transceivers.end()) {
-                auto tr = std::make_shared<rtp_transceiver>(
-                    weak_from_this(), rm.mid, sdp_direction::recvonly);
+                auto tr = std::make_shared<rtp_transceiver>(weak_from_this());
+                tr->set_mid(rm.mid);
+                tr->set_direction(sdp_direction::recvonly);
                 tr->wire_back_references();
+                tr->from_remote_sdp(rm);
                 tr->set_codecs(rm.rtpmaps);
-                tr->set_msid(rm.msid);
-                _transceivers.push_back(std::move(tr));
+
+                auto k = rm.media_type == "audio" ? media_kind::audio
+                                                  : media_kind::video;
+                auto track = std::make_shared<media_track_impl>(
+                    k, rm.mid,
+                    static_cast<net::io_context &>(_executor.context()));
+                tr->receiver()->set_track(track);
+
+                auto receiver = tr->receiver();
+                _transceivers.push_back(tr);
+                // TODO: should invoke here?
+                if (_on_track_cb)
+                    _on_track_cb(std::move(receiver), std::move(track),
+                                 rm.msids, std::move(tr));
             } else {
                 (*it)->from_remote_sdp(rm);
             }
@@ -354,6 +463,10 @@ connection_impl::set_remote_description(session_description desc) {
 
 void connection_impl::on_candidates(connection_impl::on_candidates_cb cb) {
     _agent.on_local_candidates(std::move(cb));
+}
+
+void connection_impl::on_track(connection_impl::on_track_cb cb) {
+    _on_track_cb = std::move(cb);
 }
 
 asioice::task<session_description> connection_impl::create_offer() {
@@ -502,12 +615,44 @@ connection_impl::create_data_channel(std::string label,
 }
 
 std::shared_ptr<rtp_transceiver>
-connection_impl::add_transceiver(std::string mid, sdp_direction direction) {
-    auto t = std::make_shared<rtp_transceiver>(weak_from_this(), std::move(mid),
-                                               direction);
+connection_impl::add_transceiver(media_kind kind, rtp_transceiver_init init) {
+    auto t = std::make_shared<rtp_transceiver>(weak_from_this());
     t->wire_back_references();
-    _transceivers.push_back(std::move(t));
+    t->set_direction(init.direction);
+    t->set_codecs(kind == media_kind::video ? default_video_codecs()
+                                            : default_audio_codecs());
+    t->sender()->set_msids(std::move(init.streams));
+    _transceivers.push_back(t);
     return t;
+}
+
+std::shared_ptr<rtp_transceiver>
+connection_impl::add_transceiver(std::shared_ptr<media_track> track,
+                                 rtp_transceiver_init init) {
+    auto t = add_transceiver(track->kind(), std::move(init));
+    t->sender()->set_track(std::move(track));
+    return t;
+}
+
+void connection_impl::_start_sender_loops() {
+    if (!_srtp_transport)
+        return;
+
+    for (auto &t : _transceivers) {
+        auto sender = t->sender();
+        if (!sender || sender->_stopped)
+            continue;
+
+        auto track = sender->track();
+        if (!track)
+            continue;
+
+        sender->_send_loop = stdexec::spawn_future(
+            stdexec::starts_on(
+                stdexec::inline_scheduler{},
+                _sender_send_loop(sender->weak_from_this(), _srtp_transport)),
+            _scope.get_token());
+    }
 }
 
 void connection_impl::close() noexcept {
@@ -524,6 +669,7 @@ void connection_impl::close() noexcept {
     for (auto &t : _transceivers)
         t->stop();
     _transceivers.clear();
+    _ssrc_track_map.clear();
 
     _local_desc.reset();
     _remote_desc.reset();

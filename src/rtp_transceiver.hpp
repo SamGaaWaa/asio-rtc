@@ -5,11 +5,13 @@
 #include <string>
 #include <vector>
 
+#include "any_sender.hpp"
 #include "sdp.hpp"
 
 namespace asiortc {
 
 struct connection_impl;
+struct media_track;
 
 struct rtp_encoding_parameters {
     bool active = true;
@@ -42,9 +44,15 @@ struct rtp_transceiver;
 struct rtp_sender : std::enable_shared_from_this<rtp_sender> {
     rtp_sender() noexcept = default;
 
-    std::string mid() const noexcept { return _mid; }
-    const std::string &track_id() const noexcept { return _track_id; }
-    void set_track_id(std::string id) { _track_id = std::move(id); }
+    const std::string &mid() const noexcept { return _mid; }
+
+    const std::shared_ptr<media_track> &track() const noexcept {
+        return _track;
+    }
+
+    void set_track(std::shared_ptr<media_track> t) noexcept {
+        _track = std::move(t);
+    }
 
     bool stopped() const noexcept { return _stopped; }
     void stop() { _stopped = true; }
@@ -57,22 +65,34 @@ struct rtp_sender : std::enable_shared_from_this<rtp_sender> {
         return _parameters;
     }
 
+    const std::vector<std::string> &msids() const noexcept { return _msids; }
+
   private:
     friend struct rtp_transceiver;
+    friend struct connection_impl;
+
+    void set_msids(std::vector<std::string> msids) noexcept {
+        _msids = std::move(msids);
+    }
 
     std::string _mid{};
-    std::string _track_id{};
+    std::shared_ptr<media_track> _track{};
     std::weak_ptr<rtp_transceiver> _transceiver{};
     bool _stopped = false;
+    uint16_t _seq = 0;
     rtp_send_parameters _parameters{};
+    std::optional<any_sender<void>> _send_loop{};
+    std::vector<std::string> _msids{};
 };
 
 struct rtp_receiver : std::enable_shared_from_this<rtp_receiver> {
     rtp_receiver() noexcept = default;
 
-    std::string mid() const noexcept { return _mid; }
-    const std::string &track_id() const noexcept { return _track_id; }
-    void set_track_id(std::string id) { _track_id = std::move(id); }
+    const std::string &mid() const noexcept { return _mid; }
+
+    const std::shared_ptr<media_track> &track() const noexcept {
+        return _track;
+    }
 
     bool stopped() const noexcept { return _stopped; }
     void stop() { _stopped = true; }
@@ -87,19 +107,35 @@ struct rtp_receiver : std::enable_shared_from_this<rtp_receiver> {
 
   private:
     friend struct rtp_transceiver;
+    friend struct connection_impl;
+
+    void set_track(std::shared_ptr<media_track> t) { _track = std::move(t); }
 
     std::string _mid{};
-    std::string _track_id{};
+    std::shared_ptr<media_track> _track{};
     std::weak_ptr<rtp_transceiver> _transceiver{};
     bool _stopped = false;
     rtp_receive_parameters _parameters{};
 };
 
-struct rtp_transceiver : std::enable_shared_from_this<rtp_transceiver> {
-    rtp_transceiver(std::weak_ptr<connection_impl> conn, std::string mid,
-                    sdp_direction direction = sdp_direction::sendrecv);
+struct rtp_transceiver_init {
+    sdp_direction direction;
+    std::vector<rtp_encoding_parameters> send_encodings;
+    std::vector<std::string> streams;
+};
 
-    std::string mid() const noexcept { return _mid; }
+std::vector<sdp_codec> default_video_codecs();
+std::vector<sdp_codec> default_audio_codecs();
+
+struct rtp_transceiver : std::enable_shared_from_this<rtp_transceiver> {
+    rtp_transceiver(std::weak_ptr<connection_impl> conn)
+        : _conn{std::move(conn)}, _sender{std::make_shared<rtp_sender>()},
+          _receiver{std::make_shared<rtp_receiver>()} {
+        if (_conn.expired())
+            throw std::invalid_argument{"conn == nullptr"};
+    }
+
+    const std::string &mid() const noexcept { return _mid; }
     void set_mid(std::string mid) { _mid = std::move(mid); }
 
     sdp_direction direction() const noexcept { return _direction; }
@@ -108,16 +144,15 @@ struct rtp_transceiver : std::enable_shared_from_this<rtp_transceiver> {
     bool stopped() const noexcept { return _stopped; }
     void stop();
 
-    std::shared_ptr<rtp_sender> sender() const noexcept { return _sender; }
-    std::shared_ptr<rtp_receiver> receiver() const noexcept {
+    const std::shared_ptr<rtp_sender> &sender() const noexcept {
+        return _sender;
+    }
+    const std::shared_ptr<rtp_receiver> &receiver() const noexcept {
         return _receiver;
     }
 
     const std::vector<sdp_codec> &codecs() const noexcept { return _codecs; }
     void set_codecs(std::vector<sdp_codec> codecs);
-
-    const std::string &msid() const noexcept { return _msid; }
-    void set_msid(std::string msid) { _msid = std::move(msid); }
 
     std::shared_ptr<connection_impl> connection() const noexcept {
         return _conn.lock();
@@ -130,10 +165,9 @@ struct rtp_transceiver : std::enable_shared_from_this<rtp_transceiver> {
     void from_remote_sdp(const sdp_media &remote);
 
   private:
+    std::weak_ptr<connection_impl> _conn;
     std::string _mid{};
     sdp_direction _direction{sdp_direction::sendrecv};
-    std::string _msid{};
-    std::weak_ptr<connection_impl> _conn{};
 
     std::shared_ptr<rtp_sender> _sender{};
     std::shared_ptr<rtp_receiver> _receiver{};

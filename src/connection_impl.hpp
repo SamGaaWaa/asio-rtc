@@ -1,6 +1,6 @@
 #pragma once
 
-#include <exec/any_sender_of.hpp>
+#include "any_sender.hpp"
 
 #include "asioice/basic_agent.hpp"
 #include "asioice/config.hpp"
@@ -10,6 +10,7 @@
 #include "asioice/ssl/dtls_config.hpp"
 #include "asioice/task.hpp"
 #include "asiortc/connection.hpp"
+#include "asiortc/media_track.hpp"
 #include "data_channel.hpp"
 #include "rtp_transceiver.hpp"
 #include "sdp.hpp"
@@ -30,26 +31,12 @@ namespace net = asio;
 #include <boost/compat/move_only_function.hpp>
 #include <functional>
 #include <optional>
+#include <unordered_map>
 
 namespace asiortc {
 
-template <class T> struct any_sender_trait {
-    using type =
-        exec::any_sender<exec::any_receiver<stdexec::completion_signatures<
-            stdexec::set_value_t(T), stdexec::set_error_t(std::exception_ptr),
-            stdexec::set_stopped_t()>>>;
-};
-
-template <> struct any_sender_trait<void> {
-    using type =
-        exec::any_sender<exec::any_receiver<stdexec::completion_signatures<
-            stdexec::set_value_t(), stdexec::set_error_t(std::exception_ptr),
-            stdexec::set_stopped_t()>>>;
-};
-
-template <class T> using any_sender = typename any_sender_trait<T>::type;
-
 struct connection_impl;
+struct media_track_impl;
 
 struct connection_impl : std::enable_shared_from_this<connection_impl> {
     using agent_type = asioice::basic_agent<net::ip::udp::socket>;
@@ -67,6 +54,10 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
         std::shared_ptr<asiortc::data_channel>)>;
     using on_candidates_cb = boost::compat::move_only_function<void(
         std::span<const asioice::candidate>)>;
+    using on_track_cb = boost::compat::move_only_function<void(
+        std::shared_ptr<rtp_receiver> receiver,
+        std::shared_ptr<media_track> track, std::vector<std::string> msids,
+        std::shared_ptr<rtp_transceiver> transceiver)>;
 
     connection_impl(executor_type ex, asiortc::configuration cfg = {});
 
@@ -161,8 +152,11 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
                         asiortc::data_channel::options options = {});
 
     std::shared_ptr<rtp_transceiver>
-    add_transceiver(std::string mid,
-                    sdp_direction direction = sdp_direction::sendrecv);
+    add_transceiver(media_kind kind, rtp_transceiver_init init = {});
+
+    std::shared_ptr<rtp_transceiver>
+    add_transceiver(std::shared_ptr<media_track>,
+                    rtp_transceiver_init init = {});
 
     const auto &transceivers() const noexcept { return _transceivers; }
     auto &transceivers() noexcept { return _transceivers; }
@@ -175,6 +169,7 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
     }
     auto add_ice_candidate() { return _agent.add_remote_candidate(); }
     void on_candidates(on_candidates_cb cb);
+    void on_track(on_track_cb cb);
 
     auto sendto(net::const_buffer data, uint8_t component) {
         return _agent.sendto(data, component);
@@ -191,6 +186,10 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
     static ice_connection_state_t
     to_ice_connection_state(asioice::agent_state_t s) noexcept;
     void on_data_channel(std::shared_ptr<data_channel_type> ch);
+    void _start_sender_loops();
+    static asioice::task<void>
+    _sender_send_loop(std::weak_ptr<rtp_sender> weak_sender,
+                      std::shared_ptr<srtp_transport_type> srtp);
 
     executor_type _executor;
     stdexec::counting_scope _scope{};
@@ -205,6 +204,8 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
     std::optional<datachannel_manager_type> _data_channel_manager{};
 
     std::vector<std::shared_ptr<rtp_transceiver>> _transceivers{};
+    std::unordered_map<uint32_t, std::shared_ptr<media_track_impl>>
+        _ssrc_track_map{};
 
     std::optional<session_description> _local_desc{};
     std::optional<session_description> _remote_desc{};
@@ -220,6 +221,7 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
         connection_state_t::init};
 
     on_data_channel_cb _on_remote_channel_cb;
+    on_track_cb _on_track_cb;
     bool _need_sctp{false};
 
     srtp_transport_base::on_new_ssrc_callback_type _pending_srtp_new_ssrc_cb;

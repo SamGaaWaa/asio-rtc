@@ -39,6 +39,7 @@ file(GLOB RTC_SRC_FILES
     src/rtcp.cpp
     src/sdp.cpp
     src/rtp_transceiver.cpp
+    src/media_track_impl.cpp
 )
 add_library(asiortc STATIC ${RTC_SRC_FILES})
 target_link_libraries(asiortc PRIVATE asioice OpenSSL::SSL OpenSSL::Crypto srtp3)

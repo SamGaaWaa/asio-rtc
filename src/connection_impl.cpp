@@ -110,22 +110,63 @@ connection_impl::_sender_send_loop(std::weak_ptr<rtp_sender> weak_sender,
         if (!frame)
             co_return;
 
-        std::vector<uint8_t> rtp_buf(12 + frame->data.size());
-        rtp_buf[0] = 0x80;
-        rtp_buf[1] = frame->payload_type | (frame->marker ? 0x80 : 0);
-        uint16_t seq = ++sender->_seq;
-        asioice::binary::write_big<uint16_t>(rtp_buf.data() + 2, seq);
-        asioice::binary::write_big<uint32_t>(rtp_buf.data() + 4,
-                                             frame->timestamp);
-        asioice::binary::write_big<uint32_t>(rtp_buf.data() + 8, frame->ssrc);
-        std::memcpy(rtp_buf.data() + 12, frame->data.data(),
-                    frame->data.size());
+        // VP8 RTP payload: 1-byte descriptor + VP8 bitstream
+        uint8_t vp8_desc = frame->data[0];
+        const uint8_t *vp8_data = frame->data.data() + 1;
+        size_t vp8_len = frame->data.size() - 1;
 
-        enc_buf.resize(rtp_buf.size() +
-                       srtp_transport_base::max_protect_rtp_overhead());
-        auto send_result = co_await srtp->send_rtp(rtp_buf, enc_buf);
-        if (std::get<0>(send_result))
-            co_return;
+        // Fragment large frames to stay under MTU
+        static constexpr size_t MAX_RTP_PAYLOAD = 1200;
+
+        if (vp8_len <= MAX_RTP_PAYLOAD - 1) {
+            // Single packet
+            std::vector<uint8_t> rtp_buf(12 + frame->data.size());
+            rtp_buf[0] = 0x80;
+            rtp_buf[1] = frame->payload_type | 0x80; // marker
+            uint16_t seq = ++sender->_seq;
+            asioice::binary::write_big<uint16_t>(rtp_buf.data() + 2, seq);
+            asioice::binary::write_big<uint32_t>(rtp_buf.data() + 4,
+                                                 frame->timestamp);
+            asioice::binary::write_big<uint32_t>(rtp_buf.data() + 8,
+                                                 frame->ssrc);
+            std::memcpy(rtp_buf.data() + 12, frame->data.data(),
+                        frame->data.size());
+
+            enc_buf.resize(rtp_buf.size() +
+                           srtp_transport_base::max_protect_rtp_overhead());
+            auto r = co_await srtp->send_rtp(rtp_buf, enc_buf);
+            if (std::get<0>(r))
+                co_return;
+        } else {
+            // Fragmented VP8 RTP
+            size_t off = 0;
+            bool first = true;
+            while (off < vp8_len) {
+                size_t chunk = std::min(vp8_len - off, MAX_RTP_PAYLOAD - 1);
+                uint8_t desc = first ? vp8_desc : uint8_t(0);
+                std::vector<uint8_t> rtp_buf(12 + 1 + chunk);
+                rtp_buf[0] = 0x80;
+                bool is_last = (off + chunk >= vp8_len);
+                rtp_buf[1] = frame->payload_type | (is_last ? 0x80 : 0);
+                uint16_t seq = ++sender->_seq;
+                asioice::binary::write_big<uint16_t>(rtp_buf.data() + 2, seq);
+                asioice::binary::write_big<uint32_t>(rtp_buf.data() + 4,
+                                                     frame->timestamp);
+                asioice::binary::write_big<uint32_t>(rtp_buf.data() + 8,
+                                                     frame->ssrc);
+                rtp_buf[12] = desc;
+                std::memcpy(rtp_buf.data() + 13, vp8_data + off, chunk);
+
+                enc_buf.resize(rtp_buf.size() +
+                               srtp_transport_base::max_protect_rtp_overhead());
+                auto r = co_await srtp->send_rtp(rtp_buf, enc_buf);
+                if (std::get<0>(r))
+                    co_return;
+
+                off += chunk;
+                first = false;
+            }
+        }
     }
 }
 
@@ -140,14 +181,19 @@ static asioice::agent_config get_agent_config(asiortc::configuration &&cfg) {
             ? asioice::transport_policy::ALL
             : asioice::transport_policy::RELAY;
     ret.enable_mdns = true;
-    // TODO: parse STUN server and TURN server
+    ret.ice_servers.urls = std::move(cfg.ice_servers.urls);
+    ret.ice_servers.username = std::move(cfg.ice_servers.username);
+    ret.ice_servers.password = std::move(cfg.ice_servers.password);
     return ret;
 }
 
 connection_impl::connection_impl(connection_impl::executor_type ex,
                                  asiortc::configuration cfg)
     : _executor{std::move(ex)},
-      _agent{_executor, get_agent_config(std::move(cfg))} {}
+      _agent{_executor, get_agent_config(std::move(cfg))} {
+    _agent.on_local_candidates(
+        std::bind_front(&connection_impl::do_on_candidates, this));
+}
 
 asioice::task<void> connection_impl::apply_descriptions() {
     if (_roles_set || !_local_desc || !_remote_desc)
@@ -213,6 +259,15 @@ void connection_impl::start_gathering() {
                         _gathering_state = ice_gathering_state_t::complete;
                 }))),
         _scope.get_token());
+}
+
+void connection_impl::do_on_candidates(std::span<const asioice::candidate> cc) {
+    if (_local_desc) {
+        for (const auto &c : cc)
+            _local_desc->candidates.push_back(c.to_sdp());
+    }
+    if (_on_candidates)
+        _on_candidates(cc);
 }
 
 void connection_impl::start_connecting() {
@@ -461,10 +516,6 @@ connection_impl::set_remote_description(session_description desc) {
     start_connecting();
 }
 
-void connection_impl::on_candidates(connection_impl::on_candidates_cb cb) {
-    _agent.on_local_candidates(std::move(cb));
-}
-
 void connection_impl::on_track(connection_impl::on_track_cb cb) {
     _on_track_cb = std::move(cb);
 }
@@ -486,7 +537,7 @@ asioice::task<session_description> connection_impl::create_offer() {
     offer.timing.stop = 0;
     offer.ice_ufrag = _agent.local_username();
     offer.ice_pwd = _agent.local_password();
-    offer.fingerprint = fp.to_sdp();
+    offer.fingerprint = fp.hash_name() + " " + fp.value;
     offer.setup = "actpass";
 
     int mid_counter = 0;
@@ -554,7 +605,7 @@ asioice::task<session_description> connection_impl::create_answer() {
                                : _remote_desc->bundle_groups;
     answer.ice_ufrag = _agent.local_username();
     answer.ice_pwd = _agent.local_password();
-    answer.fingerprint = fp.to_sdp();
+    answer.fingerprint = fp.hash_name() + " " + fp.value;
     answer.setup = we_are_active ? "active" : "passive";
 
     for (const auto &rm : _remote_desc->medias) {

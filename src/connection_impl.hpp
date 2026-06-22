@@ -168,7 +168,9 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
         return _agent.add_remote_candidate(std::move(c));
     }
     auto add_ice_candidate() { return _agent.add_remote_candidate(); }
-    void on_candidates(on_candidates_cb cb);
+    void on_candidates(on_candidates_cb cb) noexcept {
+        _on_candidates = std::move(cb);
+    }
     void on_track(on_track_cb cb);
 
     auto sendto(net::const_buffer data, uint8_t component) {
@@ -181,6 +183,7 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
   private:
     asioice::task<void> apply_descriptions();
     void start_gathering();
+    void do_on_candidates(std::span<const asioice::candidate>);
     void start_connecting();
     asioice::task<void> do_connect();
     static ice_connection_state_t
@@ -195,6 +198,7 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
     stdexec::counting_scope _scope{};
 
     agent_type _agent;
+    on_candidates_cb _on_candidates{};
     asioice::ssl::dtls_certificate _cert{};
     bool _roles_set = false;
     std::shared_ptr<ice_transport_type> _ice_transport{};

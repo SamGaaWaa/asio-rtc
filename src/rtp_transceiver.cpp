@@ -24,9 +24,6 @@ static sdp_direction negotiate_direction(sdp_direction local,
 std::vector<sdp_codec> default_video_codecs() {
     return {
         {96, "VP8", 90000, ""},
-        {97, "rtx", 90000, "apt=96"},
-        {98, "H264", 90000, ""},
-        {99, "rtx", 90000, "apt=98"},
     };
 }
 

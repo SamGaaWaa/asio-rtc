@@ -132,6 +132,28 @@ struct srtp_transport : srtp_transport_base {
                            {(uint8_t*)data.data(), data.size()});
     if (enc.empty())
       throw std::runtime_error{"protect_rtp failed"};
+    data.resize(enc.size());
+    return do_send(enc);
+  }
+
+  auto send_rtcp(std::span<const uint8_t> data, std::span<uint8_t> buf) {
+    // if (!rtp::is_rtp_packet(data))
+    //   throw std::invalid_argument{"!rtp::is_rtp_packet(data)"};
+    auto enc = protect_rtcp(data, buf);
+    if (enc.empty())
+      throw std::runtime_error{"protect_rtp failed"};
+    return do_send(enc);
+  }
+
+  template <VectorLikeBuffer Vec>
+  auto send_rtcp(Vec& data) {
+    std::size_t origin_size = data.size();
+    data.resize(data.size() + max_protect_rtcp_overhead());
+    auto enc = protect_rtcp({(const uint8_t*)data.data(), origin_size},
+                           {(uint8_t*)data.data(), data.size()});
+    if (enc.empty())
+      throw std::runtime_error{"protect_rtp failed"};
+    data.resize(enc.size());
     return do_send(enc);
   }
 

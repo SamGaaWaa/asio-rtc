@@ -7,32 +7,34 @@
 #include <boost/asio/as_tuple.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
-#include <boost/asio/read.hpp>
-#include <boost/asio/readable_pipe.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <boost/beast/websocket.hpp>
-#include <boost/process/v2/process.hpp>
-#include <boost/process/v2/stdio.hpp>
-#include <boost/process/v2/shell.hpp>
 namespace asioice {
 namespace net = boost::asio;
 }
 namespace beast = boost::beast;
 namespace http = beast::http;
 namespace websocket = beast::websocket;
-namespace bp = boost::process::v2;
 #else
 #error "Requires Boost.Asio"
 #endif
 
 #include "json.hpp"
 
-#include <exec/async_scope.hpp>
-#include <exec/start_detached.hpp>
+#include "codecs/vpx.hpp"
+
+extern "C" {
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libavutil/imgutils.h>
+#include <libavutil/opt.h>
+}
 
 #include <chrono>
-#include <filesystem>
+#include <exec/async_scope.hpp>
+#include <exec/start_detached.hpp>
+#include <cstring>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -51,7 +53,7 @@ static task<void> ws_send(ws_t &ws, const nlohmann::json &msg) {
     ws.text(true);
     auto d = msg.dump();
     auto [ec, n] = co_await ws.async_write(net::buffer(d),
-                                           net::as_tuple(utils::use_sender));
+                                            net::as_tuple(utils::use_sender));
     if (ec)
         std::cerr << "ws err: " << ec.message() << '\n';
 }
@@ -69,186 +71,184 @@ static task<nlohmann::json> ws_recv(ws_t &ws) {
 
 struct ffmpeg_track : public media_track {
     ffmpeg_track(const std::string &filepath, net::io_context &ctx)
-        : _kind(media_kind::video), _id(filepath), _ctx(ctx),
-          _child_pipe(_ctx) {
-        std::vector<std::string> ff_args;
-        ff_args.push_back("-re");
-        if (filepath.find("://") == std::string::npos &&
-            filepath.find('.') == std::string::npos) {
-            ff_args.push_back("-f");
-            ff_args.push_back("lavfi");
-        }
-        ff_args.push_back("-i");
-        ff_args.push_back(filepath);
-        ff_args.push_back("-an");
-        if (filepath.ends_with(".ivf") || filepath.ends_with(".webm")) {
-            ff_args.push_back("-c:v");
-            ff_args.push_back("copy");
-        } else {
-            ff_args.push_back("-c:v");
-            ff_args.push_back("libvpx");
-            ff_args.push_back("-cpu-used");
-            ff_args.push_back("5");
-            ff_args.push_back("-deadline");
-            ff_args.push_back("realtime");
-            ff_args.push_back("-b:v");
-            ff_args.push_back("1M");
-        }
-        ff_args.push_back("-f");
-        ff_args.push_back("ivf");
-        ff_args.push_back("-");
+        : _kind(media_kind::video), _id(filepath), _timer(ctx) {
 
-        try {
-            std::string args_str = "/usr/bin/ffmpeg ";
-            for (const auto &arg : ff_args) {
-                args_str += arg;
-                args_str += ' ';
-            }
-            // args_str += '\n';
-            std::cout << "CMD: " << args_str << "\n\n";
-            bp::shell sh(args_str);
-            auto exe = sh.exe();
-            _child = bp::process(_ctx, "/usr/bin/ffmpeg", ff_args,
-                                 bp::process_stdio{{}, _child_pipe, {}});
-        } catch (const std::exception &e) {
-            std::cerr << "ffmpeg launch failed: " << e.what() << '\n';
+        int ret = avformat_open_input(&_fmt_ctx, filepath.c_str(),
+                                       nullptr, nullptr);
+        if (ret < 0) {
+            std::cerr << "avformat_open_input failed\n";
             _state = track_state::ended;
             return;
         }
 
-        if (!_child->running()) {
-            std::cerr << "ffmpeg failed to start\n";
+        avformat_find_stream_info(_fmt_ctx, nullptr);
+        _stream_idx = av_find_best_stream(_fmt_ctx, AVMEDIA_TYPE_VIDEO,
+                                          -1, -1, nullptr, 0);
+        if (_stream_idx < 0) {
+            std::cerr << "no video stream found\n";
             _state = track_state::ended;
             return;
         }
-        std::cout << "ffmpeg pid=" << _child->id() << " reading " << filepath
-                  << '\n';
+
+        AVStream *stream = _fmt_ctx->streams[_stream_idx];
+        const AVCodec *codec =
+            avcodec_find_decoder(stream->codecpar->codec_id);
+        _codec_ctx = avcodec_alloc_context3(codec);
+        avcodec_parameters_to_context(_codec_ctx, stream->codecpar);
+        if (avcodec_open2(_codec_ctx, codec, nullptr) < 0) {
+            std::cerr << "avcodec_open2 failed\n";
+            _state = track_state::ended;
+            return;
+        }
+
+        _width = _codec_ctx->width;
+        _height = _codec_ctx->height;
+
+        int fps_num = stream->avg_frame_rate.num;
+        int fps_den = stream->avg_frame_rate.den;
+        if (fps_num <= 0 || fps_den <= 0) {
+            fps_num = 30;
+            fps_den = 1;
+        }
+        _frame_duration = std::chrono::milliseconds(
+            fps_den * 1000 / fps_num);
+
+        std::cout << "ffmpeg_track: " << _width << "x" << _height
+                  << " fps=" << fps_num << "/" << fps_den
+                  << " file=" << filepath << '\n';
+    }
+
+    ~ffmpeg_track() {
+        if (_codec_ctx) avcodec_free_context(&_codec_ctx);
+        if (_fmt_ctx) avformat_close_input(&_fmt_ctx);
     }
 
     media_kind kind() const noexcept override { return _kind; }
     std::string id() const noexcept override { return _id; }
     track_state ready_state() const noexcept override { return _state; }
-
-    void stop() override {
-        _state = track_state::ended;
-        if (_child->running()) {
-            _child->terminate();
-            _child->wait();
-        }
-    }
+    void stop() override { _state = track_state::ended; }
 
     asioice::task<std::optional<media_frame>> recv() override {
-        // Skip 32-byte IVF header
-        if (!_ivf_header_done) {
-            auto ec = co_await _read_exact(32);
-            if (ec) {
-                std::cerr << "IVF header read: " << ec.message() << '\n';
+        _timer.expires_after(_frame_duration);
+        auto [ec] = co_await _timer.async_wait(
+            net::as_tuple(utils::use_sender));
+        if (ec || _state == track_state::ended)
+            co_return std::nullopt;
+
+        for (int tries = 0; tries < 100; ++tries) {
+            AVPacket *pkt = av_packet_alloc();
+            int ret = av_read_frame(_fmt_ctx, pkt);
+            if (ret == AVERROR_EOF || ret < 0) {
+                av_packet_unref(pkt);
+                av_packet_free(&pkt);
+                av_seek_frame(_fmt_ctx, _stream_idx, 0,
+                              AVSEEK_FLAG_BACKWARD);
+                avcodec_flush_buffers(_codec_ctx);
+                _pts = 0;
+                ++_loops;
+                if (_loops % 10 == 0)
+                    std::cout << "ffmpeg loop " << _loops << '\n';
+                continue;
+            }
+
+            if (pkt->stream_index != _stream_idx) {
+                av_packet_unref(pkt);
+                av_packet_free(&pkt);
+                continue;
+            }
+
+            ret = avcodec_send_packet(_codec_ctx, pkt);
+            av_packet_unref(pkt);
+            av_packet_free(&pkt);
+            if (ret < 0)
+                continue;
+
+            AVFrame *frame = av_frame_alloc();
+            ret = avcodec_receive_frame(_codec_ctx, frame);
+            if (ret == AVERROR(EAGAIN)) {
+                av_frame_free(&frame);
+                continue;
+            }
+            if (ret < 0) {
+                av_frame_free(&frame);
                 co_return std::nullopt;
             }
-            _ivf_header_done = true;
+
+            media_frame mf;
+            mf.kind = media_kind::video;
+            mf.ssrc = 0xDEADBEEF;
+            mf.timestamp = _pts;
+            mf.payload_type = 96;
+            mf.width = frame->width;
+            mf.height = frame->height;
+
+            int y_size = frame->width * frame->height;
+            mf.data.resize(y_size + y_size / 2);
+            std::memcpy(mf.data.data(), frame->data[0], y_size);
+            std::memcpy(mf.data.data() + y_size, frame->data[1],
+                        y_size / 4);
+            std::memcpy(mf.data.data() + y_size + y_size / 4,
+                        frame->data[2], y_size / 4);
+
+            av_frame_free(&frame);
+            _pts += 3000;
+            co_return mf;
         }
 
-        if (_state == track_state::ended)
-            co_return std::nullopt;
-
-        // Read 12-byte IVF frame header: 4 LE size + 8 LE PTS
-        auto ec = co_await _read_exact(12);
-        if (ec) {
-            if (ec != net::error::eof && ec != net::error::operation_aborted)
-                std::cerr << "IVF frame hdr: " << ec.message() << '\n';
-            stop();
-            co_return std::nullopt;
-        }
-
-        uint32_t fsz = static_cast<uint32_t>(_buf[0]) |
-                       (static_cast<uint32_t>(_buf[1]) << 8) |
-                       (static_cast<uint32_t>(_buf[2]) << 16) |
-                       (static_cast<uint32_t>(_buf[3]) << 24);
-
-        // Read VP8 frame data
-        ec = co_await _read_exact(fsz);
-        if (ec) {
-            std::cerr << "IVF frame data: " << ec.message() << '\n';
-            stop();
-            co_return std::nullopt;
-        }
-
-        media_frame frame;
-        frame.kind = media_kind::video;
-        frame.ssrc = 0xDEADBEEF;
-        frame.timestamp = _ts;
-        frame.payload_type = 96;
-        frame.marker = true;
-        // Prepend VP8 payload descriptor (S=1, PID=0)
-        frame.data.reserve(1 + _buf.size());
-        frame.data.push_back(0x10);
-        frame.data.insert(frame.data.end(), _buf.begin(), _buf.end());
-
-        // Force first frame as keyframe (clear VP8 frame tag bit 7)
-        if (_frame_count == 0)
-            frame.data[1] &= 0x7F;
-        ++_frame_count;
-
-        _ts += 3000;
-        co_return frame;
+        co_return std::nullopt;
     }
 
   private:
-    asioice::task<boost::system::error_code> _read_exact(size_t n) {
-        _buf.resize(n);
-        size_t off = 0;
-        while (off < n) {
-            auto [ec, count] = co_await net::async_read(
-                _child_pipe, net::buffer(_buf.data() + off, n - off),
-                net::as_tuple(utils::use_sender));
-            if (ec)
-                co_return ec;
-            if (count == 0)
-                co_return net::error::eof;
-            off += count;
-        }
-        co_return boost::system::error_code{};
-    }
-
     media_kind _kind;
     std::string _id;
     track_state _state = track_state::live;
-    net::io_context &_ctx;
-    net::readable_pipe _child_pipe;
-    std::optional<bp::process> _child{};
-    std::vector<uint8_t> _buf;
-    bool _ivf_header_done = false;
-    uint32_t _ts = 0;
-    uint32_t _frame_count = 0;
+    std::chrono::milliseconds _frame_duration{33};
+    uint32_t _pts = 0;
+    int _width = 0, _height = 0;
+    uint64_t _loops = 0;
+    net::steady_timer _timer;
+
+    AVFormatContext *_fmt_ctx = nullptr;
+    AVCodecContext *_codec_ctx = nullptr;
+    int _stream_idx = -1;
 };
 
 static task<void> ffmpeg_session(net::io_context &ctx, ws_ptr ws) {
+    asioice::utils::scope_guard on_exit([]()noexcept {
+        std::cout << "ffmpeg_session: exited\n";
+    });
     std::cout << "WS connected (asiortc ffmpeg_track demo)\n";
     utils::scheduler sched{ctx};
 
     exec::async_scope scope;
     net::steady_timer timer(ctx);
 
-    auto conn = std::make_shared<connection_impl>(
-        ctx.get_executor(), asiortc::configuration{.ice_servers{
-                                .urls = {"stun:14.29.112.241:20002"}}});
+    auto conn = std::make_shared<connection_impl>(ctx.get_executor(), configuration{
+        .ice_servers{
+            .urls = {"stun:stun.l.google.com:19302"}
+        }
+    });
+
+    conn->register_encoder("VP8", [](int bps) {
+        return codecs::make_vp8_encoder(bps ? bps : 1000000);
+    });
 
     conn->on_track([](std::shared_ptr<rtp_receiver> receiver,
-                      std::shared_ptr<media_track> track,
-                      std::vector<std::string> msids,
-                      std::shared_ptr<rtp_transceiver> transceiver) {
+                       std::shared_ptr<media_track> track,
+                       std::vector<std::string> msids,
+                       std::shared_ptr<rtp_transceiver> transceiver) {
         std::cout << "New track: kind="
                   << (track->kind() == media_kind::audio ? "audio" : "video")
-                  << " id=" << track->id() << " mid=" << transceiver->mid()
+                  << " id=" << track->id()
+                  << " mid=" << transceiver->mid()
                   << " msids=" << msids.size() << '\n';
     });
 
     auto video_tr = conn->add_transceiver(
         media_kind::video,
-        {.direction = sdp_direction::sendonly, .streams = {"camera"}});
+        {.direction = sdp_direction::sendonly,
+         .streams = {"camera"}});
 
-    // Use testsrc if no file argument
-    // const char *src = "testsrc2=duration=60:size=640x480:rate=30";
     auto track = std::make_shared<ffmpeg_track>(s_test_file, ctx);
     if (track->stopped()) {
         std::cerr << "ffmpeg_track failed to start\n";
@@ -256,15 +256,17 @@ static task<void> ffmpeg_session(net::io_context &ctx, ws_ptr ws) {
         co_return;
     }
     video_tr->sender()->set_track(track);
-    std::cout << "Set ffmpeg_track on sender mid=" << video_tr->mid() << '\n';
+    std::cout << "Set ffmpeg_track on sender mid=" << video_tr->mid()
+              << '\n';
 
     auto offer = co_await conn->create_offer();
-    co_await conn->set_local_description(parse_sdp(offer.to_string(), "offer"));
+    co_await conn->set_local_description(
+        parse_sdp(offer.to_string(), "offer"));
 
-    // if (!conn->can_trickle_ice_candidates()) {
-    if (1) {
-        for (int i = 0; i < 10 && conn->ice_gathering_state() !=
-                                      ice_gathering_state_t::complete;
+    {
+        for (int i = 0;
+             i < 10 && conn->ice_gathering_state() !=
+                          ice_gathering_state_t::complete;
              ++i) {
             timer.expires_after(std::chrono::seconds(1));
             co_await timer.async_wait(utils::use_sender);
@@ -285,14 +287,10 @@ static task<void> ffmpeg_session(net::io_context &ctx, ws_ptr ws) {
     auto msg = co_await ws_recv(*ws);
     auto answer = parse_sdp(msg["sdp"].get<std::string>(), "answer");
     std::cout << "Answer: medias=" << answer.medias.size() << '\n';
-    std::cout << "Answer:" << msg["sdp"].get<std::string>() << '\n';
 
     co_await conn->set_remote_description(std::move(answer));
 
-    conn->on_new_ssrc([&](uint32_t ssrc, std::span<const uint8_t>) -> bool {
-        std::cout << "New SSRC: 0x" << std::hex << ssrc << std::dec << '\n';
-        return true;
-    });
+    auto srtp = conn->srtp();
 
     conn->on_rtp_rtcp_packet([&](asioice::io_buffer_ptr buf) {
         auto pkt = rtp::rtp_packet::parse(buf->data(), buf->size());
@@ -303,21 +301,27 @@ static task<void> ffmpeg_session(net::io_context &ctx, ws_ptr ws) {
     });
 
     std::cout << "Waiting for ICE+DTLS+SRTP...\n";
-    while (conn->connection_state() == connection_state_t::init ||
-           conn->connection_state() == connection_state_t::connecting) {
-        co_await conn->on_connection_state_changed();
+    for (int i = 0; i < 200 && !srtp; ++i) {
+        timer.expires_after(std::chrono::milliseconds(50));
+        co_await timer.async_wait(utils::use_sender);
+        srtp = conn->srtp();
     }
-    if (conn->connection_state() != connection_state_t::connected) {
-        std::cerr << "Connection timeout\n";
+    if (!srtp) {
+        std::cerr << "SRTP setup timeout\n";
         conn->close();
         co_return;
-    } else {
-        std::cout << "Connected\n";
     }
-    std::cout << "SRTP active, ffmpeg video flowing via track API\n";
+    std::cout << "SRTP active, ffmpeg video flowing (ctrl-c to stop)\n";
 
-    timer.expires_after(std::chrono::seconds(30));
-    co_await timer.async_wait(utils::use_sender);
+    // Run indefinitely
+    net::steady_timer loop_timer(ctx);
+    while (true) {
+        loop_timer.expires_after(std::chrono::seconds(3600));
+        auto [ec] = co_await loop_timer.async_wait(
+            net::as_tuple(utils::use_sender));
+        if (ec)
+            break;
+    }
 
     scope.request_stop();
     co_await (scope.on_empty() | stdexec::continues_on(sched));
@@ -326,11 +330,11 @@ static task<void> ffmpeg_session(net::io_context &ctx, ws_ptr ws) {
 }
 
 static task<void> http_session(net::io_context &ctx,
-                               net::ip::tcp::socket sock) {
+                                net::ip::tcp::socket sock) {
     beast::flat_buffer buf;
     http::request<http::string_body> req;
     auto [ec, n] = co_await http::async_read(sock, buf, req,
-                                             net::as_tuple(utils::use_sender));
+                                              net::as_tuple(utils::use_sender));
     if (ec)
         co_return;
     if (websocket::is_upgrade(req)) {
@@ -365,7 +369,6 @@ static task<void> http_session(net::io_context &ctx,
  h3{margin:0 0 10px}
  #log{margin-top:10px;padding:8px;background:#1a1a1a;max-height:150px;
       overflow-y:auto;font-size:12px;border:1px solid #333}
- .err{color:#f66}
 </style>
 </head>
 <body>
@@ -378,29 +381,27 @@ const v=document.getElementById('v');
 function L(m){log.textContent+=m+'\n';log.scrollTop=log.scrollHeight}
 (async()=>{
  const ws=new WebSocket('ws://'+location.host+'/ws');
- const pc=new RTCPeerConnection({iceServers:[{urls:'stun:14.29.112.241:20002'}]});
+ const pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});
  pc.ontrack=e=>{L('track: '+e.track.kind);v.srcObject=e.streams[0]};
  pc.oniceconnectionstatechange=()=>L('ICE: '+pc.iceConnectionState);
  pc.onconnectionstatechange=()=>L('Conn: '+pc.connectionState);
  ws.onopen=()=>L('WS connected, waiting for offer...');
-  ws.onmessage=async e=>{
-   const m=JSON.parse(e.data);
-   L('Got '+m.type);
-   await pc.setRemoteDescription(new RTCSessionDescription({type:m.type,sdp:m.sdp}));
-   const a=await pc.createAnswer();
-   await pc.setLocalDescription(a);
-   L('ICE gathering...');
-   await new Promise(r=>{
-    if(pc.iceGatheringState==='complete')r();
-    else pc.addEventListener('icegatheringstatechange',function h(){
-     if(pc.iceGatheringState==='complete'){
-      pc.removeEventListener('icegatheringstatechange',h);
-      r();}});
-   });
-   const full=pc.localDescription;
-   L('Sending answer ('+full.sdp.split('\\r\\n').filter(l=>l.startsWith('a=candidate')).length+' candidates)');
-   ws.send(JSON.stringify({type:'answer',sdp:full.sdp}));
-  };
+ ws.onmessage=async e=>{
+  const m=JSON.parse(e.data);
+  L('Got '+m.type);
+  await pc.setRemoteDescription(new RTCSessionDescription({type:m.type,sdp:m.sdp}));
+  const a=await pc.createAnswer();
+  await pc.setLocalDescription(a);
+  L('ICE gathering...');
+  await new Promise(r=>{
+   if(pc.iceGatheringState==='complete')r();
+   else pc.addEventListener('icegatheringstatechange',function h(){
+    if(pc.iceGatheringState==='complete'){pc.removeEventListener('icegatheringstatechange',h);r();}});
+  });
+  const full=pc.localDescription;
+  L('Sending answer ('+full.sdp.split('\\r\\n').filter(l=>l.startsWith('a=candidate')).length+' candidates)');
+  ws.send(JSON.stringify({type:'answer',sdp:full.sdp}));
+ };
  ws.onclose=()=>L('WS closed');
 })().catch(e=>L('FATAL: '+e));
 </script>

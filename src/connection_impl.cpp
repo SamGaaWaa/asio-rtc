@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <random>
 #include <exec/async_scope.hpp>
 #include <exec/finally.hpp>
 #include <stdexcept>
@@ -18,6 +19,7 @@
 #include "asioice/detail/string_utils.hpp"
 #include "asioice/sctp_transport.hpp"
 #include "media_track_impl.hpp"
+#include "rtcp.hpp"
 #include "rtp.hpp"
 
 namespace asiortc {
@@ -107,66 +109,112 @@ connection_impl::_sender_send_loop(std::weak_ptr<rtp_sender> weak_sender,
             co_return;
 
         auto frame = co_await track->recv();
-        if (!frame)
+        if (!frame || frame->data.empty())
             co_return;
 
-        // VP8 RTP payload: 1-byte descriptor + VP8 bitstream
-        uint8_t vp8_desc = frame->data[0];
-        const uint8_t *vp8_data = frame->data.data() + 1;
-        size_t vp8_len = frame->data.size() - 1;
+        if (!sender->_encoder) {
+            auto transceiver = sender->transceiver();
+            if (!transceiver || transceiver->codecs().empty())
+                co_return;
+            auto conn = transceiver->connection();
+            if (!conn)
+                co_return;
+            for (const auto &c : transceiver->codecs()) {
+                auto it = conn->_codec_registry.find(c.name);
+                if (it != conn->_codec_registry.end()) {
+                    sender->_encoder = it->second(1000000);
+                    break;
+                }
+            }
+            if (!sender->_encoder)
+                co_return;
+        }
+        auto [payloads, ts] =
+            sender->_encoder->encode(*frame, sender->_force_keyframe);
+        sender->_force_keyframe = false;
 
-        // Fragment large frames to stay under MTU
-        static constexpr size_t MAX_RTP_PAYLOAD = 1200;
+        for (size_t i = 0; i < payloads.size(); ++i) {
+            // Build RTP header extension data (MID + abs-send-time)
+            std::vector<uint8_t> ext_data;
+            if (sender->_encoder) {
+                auto tr = sender->transceiver();
+                if (tr) {
+                    // MID ext (ID=1, 1 byte)
+                    std::string mid = tr->mid();
+                    ext_data.push_back(0x10);
+                    ext_data.push_back(
+                        static_cast<uint8_t>(mid.empty() ? '0' : mid[0]));
 
-        if (vp8_len <= MAX_RTP_PAYLOAD - 1) {
-            // Single packet
-            std::vector<uint8_t> rtp_buf(12 + frame->data.size());
-            rtp_buf[0] = 0x80;
-            rtp_buf[1] = frame->payload_type | 0x80; // marker
+                    // abs-send-time ext (ID=3, 3 bytes)
+                    uint64_t ntp = sender->_ntp_timestamp;
+                    uint32_t abs = static_cast<uint32_t>(
+                        ntp ? (ntp >> 14) & 0xFFFFFF : 0);
+                    ext_data.push_back(0x32);
+                    ext_data.push_back(
+                        static_cast<uint8_t>((abs >> 16) & 0xFF));
+                    ext_data.push_back(
+                        static_cast<uint8_t>((abs >> 8) & 0xFF));
+                    ext_data.push_back(
+                        static_cast<uint8_t>(abs & 0xFF));
+
+                    while (ext_data.size() % 4)
+                        ext_data.push_back(0);
+                }
+            }
+
+            bool has_ext = !ext_data.empty();
+            size_t ext_hdr = has_ext ? 4 : 0;
+            size_t ext_payload_off = 12 + ext_hdr + ext_data.size();
+            std::vector<uint8_t> rtp_buf(ext_payload_off +
+                                          payloads[i].size());
+            rtp_buf[0] = has_ext ? 0x90 : 0x80;
+            bool last = (i == payloads.size() - 1);
+            rtp_buf[1] = frame->payload_type | (last ? 0x80 : 0);
             uint16_t seq = ++sender->_seq;
             asioice::binary::write_big<uint16_t>(rtp_buf.data() + 2, seq);
             asioice::binary::write_big<uint32_t>(rtp_buf.data() + 4,
-                                                 frame->timestamp);
+                                                    ts ? ts : frame->timestamp);
             asioice::binary::write_big<uint32_t>(rtp_buf.data() + 8,
-                                                 frame->ssrc);
-            std::memcpy(rtp_buf.data() + 12, frame->data.data(),
-                        frame->data.size());
+                                                    frame->ssrc);
+            if (has_ext) {
+                asioice::binary::write_big<uint16_t>(
+                    rtp_buf.data() + 12, 0xBEDE);
+                asioice::binary::write_big<uint16_t>(
+                    rtp_buf.data() + 14,
+                    static_cast<uint16_t>(ext_data.size() / 4));
+                std::memcpy(rtp_buf.data() + 16, ext_data.data(),
+                            ext_data.size());
+            }
+            std::memcpy(rtp_buf.data() + ext_payload_off,
+                        payloads[i].data(), payloads[i].size());
 
             enc_buf.resize(rtp_buf.size() +
-                           srtp_transport_base::max_protect_rtp_overhead());
+                srtp_transport_base::max_protect_rtp_overhead());
             auto r = co_await srtp->send_rtp(rtp_buf, enc_buf);
             if (std::get<0>(r))
                 co_return;
-        } else {
-            // Fragmented VP8 RTP
-            size_t off = 0;
-            bool first = true;
-            while (off < vp8_len) {
-                size_t chunk = std::min(vp8_len - off, MAX_RTP_PAYLOAD - 1);
-                uint8_t desc = first ? vp8_desc : uint8_t(0);
-                std::vector<uint8_t> rtp_buf(12 + 1 + chunk);
-                rtp_buf[0] = 0x80;
-                bool is_last = (off + chunk >= vp8_len);
-                rtp_buf[1] = frame->payload_type | (is_last ? 0x80 : 0);
-                uint16_t seq = ++sender->_seq;
-                asioice::binary::write_big<uint16_t>(rtp_buf.data() + 2, seq);
-                asioice::binary::write_big<uint32_t>(rtp_buf.data() + 4,
-                                                     frame->timestamp);
-                asioice::binary::write_big<uint32_t>(rtp_buf.data() + 8,
-                                                     frame->ssrc);
-                rtp_buf[12] = desc;
-                std::memcpy(rtp_buf.data() + 13, vp8_data + off, chunk);
 
-                enc_buf.resize(rtp_buf.size() +
-                               srtp_transport_base::max_protect_rtp_overhead());
-                auto r = co_await srtp->send_rtp(rtp_buf, enc_buf);
-                if (std::get<0>(r))
-                    co_return;
+            sender->_octet_count +=
+                static_cast<uint32_t>(payloads[i].size());
+            sender->_packet_count++;
+            auto now = std::chrono::high_resolution_clock::now();
+            auto us = std::chrono::duration_cast<
+                std::chrono::microseconds>(now.time_since_epoch())
+                          .count();
+            sender->_ntp_timestamp =
+                static_cast<uint64_t>(us) * 65536 / 1000000;
+            sender->_rtp_timestamp =
+                ts ? ts : frame->timestamp;
 
-                off += chunk;
-                first = false;
-            }
+            sender->_history[seq % rtp_sender::RTP_HISTORY] =
+                rtp_sender::_history_entry{
+                    .payload = std::vector<uint8_t>(
+                        rtp_buf.begin() + ext_payload_off,
+                        rtp_buf.end()),
+                    .seq = seq,
+                    .timestamp = ts ? ts : frame->timestamp};
         }
+        continue;
     }
 }
 
@@ -240,8 +288,6 @@ asioice::task<void> connection_impl::apply_descriptions() {
 }
 
 void connection_impl::start_gathering() {
-    if (_gathering_task)
-        return;
     _gathering_state = ice_gathering_state_t::gathering;
     _gathering_task = stdexec::spawn_future(
         stdexec::starts_on(
@@ -254,7 +300,7 @@ void connection_impl::start_gathering() {
                         _local_desc->candidates.push_back(c.to_sdp());
                 }),
                 stdexec::just() | stdexec::then([this] {
-                    this->_gathering_task.reset();
+                    // this->_gathering_task.reset();
                     if (_gathering_state == ice_gathering_state_t::gathering)
                         _gathering_state = ice_gathering_state_t::complete;
                 }))),
@@ -271,13 +317,13 @@ void connection_impl::do_on_candidates(std::span<const asioice::candidate> cc) {
 }
 
 void connection_impl::start_connecting() {
-    if (_local_desc && _remote_desc && !_connecting_task) {
+    if (_local_desc && _remote_desc) {
         _connecting_task = stdexec::spawn_future(
             stdexec::starts_on(
                 stdexec::inline_scheduler{},
                 exec::finally(this->do_connect(),
                               stdexec::just() | stdexec::then([this] {
-                                  this->_connecting_task.reset();
+                                //   this->_connecting_task.reset();
                               }))),
             _scope.get_token());
     }
@@ -369,6 +415,82 @@ asioice::task<void> connection_impl::do_connect() {
                     asioice::io_buffer_ptr buf) mutable {
                     auto pkt = rtp::rtp_packet::parse(buf->data(), buf->size());
                     if (pkt) {
+                        // Track stream statistics for RTCP RR
+                        auto &st = _stream_stats[pkt->ssrc];
+                        st.ssrc = pkt->ssrc;
+                        if (!st.base_seq_set) {
+                            st.base_seq = pkt->sequence_number;
+                            st.base_seq_set = true;
+                        }
+                        if (pkt->sequence_number < st.max_seq) {
+                            if (st.max_seq - pkt->sequence_number > 0x8000)
+                                st.cycles += 0x10000;
+                        }
+                        st.max_seq = std::max<uint32_t>(
+                            st.max_seq, pkt->sequence_number);
+                        st.packets_expected =
+                            st.cycles + st.max_seq - st.base_seq + 1;
+                        st.packets_received++;
+
+                        auto now = std::chrono::steady_clock::now();
+                        auto arr_ts = static_cast<uint32_t>(
+                            std::chrono::duration_cast<
+                                std::chrono::microseconds>(
+                                now.time_since_epoch())
+                                .count() /
+                            1000 * 90);
+                        if (st.last_arrival_ts != 0) {
+                            int transit = static_cast<int>(arr_ts -
+                                st.last_arrival_ts) -
+                                static_cast<int>(pkt->timestamp -
+                                st.last_rtp_ts);
+                            if (transit < 0) transit = -transit;
+                            st.jitter_q4 += transit - ((st.jitter_q4 + 8) >> 4);
+                        }
+                        st.last_arrival_ts = arr_ts;
+                        st.last_rtp_ts = pkt->timestamp;
+
+                        // PLI + NACK trigger: gap detection
+                        uint32_t expected =
+                            st.base_seq_set
+                                ? st.cycles + st.base_seq +
+                                      (st.packets_expected %
+                                       0x10000)
+                                : pkt->sequence_number;
+                        if (st.base_seq_set &&
+                            pkt->sequence_number !=
+                                static_cast<uint16_t>(expected)) {
+                            st.consecutive_lost++;
+
+                            // NACK: collect lost sequence numbers
+                            std::vector<uint16_t> lost;
+                            uint16_t s = static_cast<uint16_t>(expected);
+                            while (s != pkt->sequence_number) {
+                                if (lost.size() < 32)
+                                    lost.push_back(s);
+                                ++s;
+                            }
+                            if (!lost.empty() && _srtp_transport) {
+                                auto nack = rtcp::rtcp_rtpfb{
+                                    rtcp::packet_type::RTPFB_NACK,
+                                    0, pkt->ssrc, lost}
+                                                .bytes();
+                                _pending_rtcp.push_back(std::move(nack));
+                            }
+
+                            if (st.consecutive_lost >= 3 &&
+                                _srtp_transport) {
+                                auto pli = rtcp::rtcp_psfb{
+                                    rtcp::packet_type::PSFB_PLI,
+                                    0, pkt->ssrc}
+                                               .bytes();
+                                _pending_rtcp.push_back(std::move(pli));
+                                st.consecutive_lost = 0;
+                            }
+                        } else {
+                            st.consecutive_lost = 0;
+                        }
+
                         auto it = _ssrc_track_map.find(pkt->ssrc);
                         if (it != _ssrc_track_map.end()) {
                             auto hdr_len = pkt->serialized_size();
@@ -387,11 +509,118 @@ asioice::task<void> connection_impl::do_connect() {
                                               payload_start + payload_len);
                             it->second->push_frame(std::move(frame));
                         }
+                    } else {
+                        // Handle compound RTCP
+                        auto cps = rtcp::parse_compound(
+                            buf->data(), buf->size());
+                        for (auto &cp : cps) {
+                            if (cp.type == rtcp::packet_type::SR) {
+                                auto &st = _stream_stats[cp.ssrc];
+                                st.ssrc = cp.ssrc;
+                                st.lsr = cp.ntp_timestamp;
+                                st.lsr_time =
+                                    std::chrono::steady_clock::now();
+                            } else if (cp.type == rtcp::packet_type::PSFB) {
+                                if (cp.report_count ==
+                                        rtcp::packet_type::PSFB_PLI ||
+                                    cp.report_count ==
+                                        rtcp::packet_type::PSFB_FIR) {
+                                    // PLI/FIR → force keyframe
+                                    for (auto &t : _transceivers) {
+                                        auto s = t->sender();
+                                        if (s && !s->stopped())
+                                            s->_force_keyframe = true;
+                                    }
+                                } else if (cp.report_count ==
+                                               rtcp::packet_type::PSFB_APP &&
+                                           !cp.payload.empty()) {
+                                    auto [bitrate, ssrcs] =
+                                        rtcp::parse_remb(
+                                            cp.payload.data(),
+                                            cp.payload.size());
+                                    for (auto ssrc : ssrcs) {
+                                        for (auto &t : _transceivers) {
+                                            auto s = t->sender();
+                                            if (s && s->_encoder)
+                                                s->_encoder->set_bitrate(
+                                                    static_cast<int>(
+                                                        bitrate));
+                                        }
+                                    }
+                                }
+                            } else if (cp.type ==
+                                           rtcp::packet_type::RTPFB &&
+                                       cp.report_count ==
+                                           rtcp::packet_type::RTPFB_NACK) {
+                                auto lost = rtcp::parse_nack(
+                                    cp.payload.data(),
+                                    cp.payload.size());
+                                for (uint16_t seq : lost) {
+                                    for (auto &t : _transceivers) {
+                                        auto s = t->sender();
+                                        if (!s)
+                                            continue;
+                                        auto &e =
+                                            s->_history[seq % rtp_sender::
+                                                                 RTP_HISTORY];
+                                        if (e && e->seq == seq) {
+                                            // RTX wrap: 12B header + 2B OSN + payload
+                                            std::vector<uint8_t> rtx(
+                                                14 + e->payload.size());
+                                            rtx[0] = 0x80;
+                                            rtx[1] = s->_rtx_pt;
+                                            uint16_t rseq = ++s->_rtx_seq;
+                                            asioice::binary::write_big<
+                                                uint16_t>(rtx.data() + 2,
+                                                          rseq);
+                                            asioice::binary::write_big<
+                                                uint32_t>(rtx.data() + 4,
+                                                          e->timestamp);
+                                            asioice::binary::write_big<
+                                                uint32_t>(rtx.data() + 8,
+                                                          s->_rtx_ssrc);
+                                            // OSN: original sequence number
+                                            asioice::binary::write_big<
+                                                uint16_t>(rtx.data() + 12,
+                                                          seq);
+                                            std::memcpy(rtx.data() + 14,
+                                                        e->payload.data(),
+                                                        e->payload.size());
+
+                                            std::vector<uint8_t> enc_buf(
+                                                rtx.size() +
+                                                srtp_transport_base::
+                                                    max_protect_rtp_overhead());
+                                            auto enc = _srtp_transport
+                                                           ->protect_rtp(
+                                                               rtx, enc_buf);
+                                            if (!enc.empty()) {
+                                                _pending_rtx.push_back(
+                                                    std::vector<uint8_t>(
+                                                        enc.begin(),
+                                                        enc.end()));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                     if (user_cb)
                         user_cb(std::move(buf));
                 });
             _start_sender_loops();
+
+            for (auto &t : _transceivers) {
+                auto receiver = t->receiver();
+                if (!receiver)
+                    continue;
+                receiver->_rtcp_loop = stdexec::spawn_future(
+                    stdexec::starts_on(
+                        stdexec::inline_scheduler{},
+                        _receiver_rtcp_loop(receiver->weak_from_this())),
+                    _scope.get_token());
+            }
         }
     }
 
@@ -518,6 +747,11 @@ connection_impl::set_remote_description(session_description desc) {
 
 void connection_impl::on_track(connection_impl::on_track_cb cb) {
     _on_track_cb = std::move(cb);
+}
+
+void connection_impl::register_encoder(std::string name,
+                                       encoder_factory factory) {
+    _codec_registry[std::move(name)] = std::move(factory);
 }
 
 asioice::task<session_description> connection_impl::create_offer() {
@@ -670,6 +904,7 @@ connection_impl::add_transceiver(media_kind kind, rtp_transceiver_init init) {
     auto t = std::make_shared<rtp_transceiver>(weak_from_this());
     t->wire_back_references();
     t->set_direction(init.direction);
+    t->sender()->_rtx_ssrc = 0xDEADBEEF + 1;
     t->set_codecs(kind == media_kind::video ? default_video_codecs()
                                             : default_audio_codecs());
     t->sender()->set_msids(std::move(init.streams));
@@ -685,6 +920,202 @@ connection_impl::add_transceiver(std::shared_ptr<media_track> track,
     return t;
 }
 
+asioice::task<void>
+connection_impl::_sender_rtcp_loop(std::weak_ptr<rtp_sender> weak_sender,
+                                   std::shared_ptr<srtp_transport_type> srtp) {
+    static thread_local std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_real_distribution<double> dist(0.5, 1.5);
+    std::vector<uint8_t> compound;
+
+    while (true) {
+        auto delay = std::chrono::milliseconds(
+            static_cast<int>(dist(gen) * 1000));
+
+        // Get executor from sender's connection for timer
+        auto sender_check = weak_sender.lock();
+        if (!sender_check || sender_check->stopped())
+            co_return;
+        auto transceiver = sender_check->transceiver();
+        auto conn = transceiver ? transceiver->connection() : nullptr;
+        if (!conn)
+            co_return;
+
+        net::steady_timer timer(
+            static_cast<net::io_context &>(conn->get_executor().context()));
+        timer.expires_after(delay);
+        auto [ec] = co_await timer.async_wait(
+            net::as_tuple(asioice::utils::use_sender));
+        if (ec)
+            co_return;
+
+        auto sender = weak_sender.lock();
+        if (!sender || sender->stopped())
+            co_return;
+
+        // Drain pending event-driven RTCP
+        auto pending_rtcp = std::move(conn->_pending_rtcp);
+        for (auto &p : pending_rtcp)
+            co_await srtp->send_rtcp(p);
+
+        // Drain pending RTX retransmissions (already SRTP-encrypted)
+        auto pending_rtx = std::move(conn->_pending_rtx);
+        for (auto &p : pending_rtx)
+            co_await conn->_ice_transport->async_send(
+                std::span<const uint8_t>(p));
+
+        compound.clear();
+        size_t sr_size = 28;
+        std::vector<uint8_t> sr(sr_size);
+        sr[0] = (2 << 6) | 0;
+        sr[1] = rtcp::packet_type::SR;
+        uint16_t sr_words = static_cast<uint16_t>(sr_size / 4 - 1);
+        asioice::binary::write_big<uint16_t>(sr.data() + 2, sr_words);
+        asioice::binary::write_big<uint32_t>(sr.data() + 4, 0);
+
+        uint64_t ntp = sender->_ntp_timestamp;
+        asioice::binary::write_big<uint64_t>(sr.data() + 8, ntp);
+        asioice::binary::write_big<uint32_t>(sr.data() + 16,
+                                              sender->_rtp_timestamp);
+        asioice::binary::write_big<uint32_t>(sr.data() + 20,
+                                              sender->_packet_count);
+        asioice::binary::write_big<uint32_t>(sr.data() + 24,
+                                              sender->_octet_count);
+        compound.insert(compound.end(), sr.begin(), sr.end());
+
+        auto sdes = rtcp::sdes_chunk{0, "asiortc"}.bytes();
+        compound.insert(compound.end(), sdes.begin(), sdes.end());
+
+        auto send_result = co_await srtp->send_rtcp(compound);
+        if (std::get<0>(send_result))
+            co_return;
+    }
+}
+
+asioice::task<void> connection_impl::_receiver_rtcp_loop(
+    std::weak_ptr<rtp_receiver> weak_receiver) {
+
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_real_distribution<double> dist(0.5, 1.5);
+
+    while (true) {
+        auto delay = std::chrono::milliseconds(
+            static_cast<int>(dist(gen) * 1000));
+
+        auto receiver = weak_receiver.lock();
+        if (!receiver || receiver->stopped())
+            co_return;
+
+        auto transceiver = receiver->transceiver();
+        auto conn = transceiver ? transceiver->connection() : nullptr;
+        if (!conn)
+            co_return;
+
+        auto srtp = conn->srtp();
+        if (!srtp)
+            co_return;
+
+        net::steady_timer timer(
+            static_cast<net::io_context &>(conn->get_executor().context()));
+        timer.expires_after(delay);
+        auto [ec] = co_await timer.async_wait(
+            net::as_tuple(asioice::utils::use_sender));
+        if (ec)
+            co_return;
+
+        receiver = weak_receiver.lock();
+        if (!receiver || receiver->stopped())
+            co_return;
+
+        // Drain pending event-driven RTCP
+        auto pending_rtcp = std::move(conn->_pending_rtcp);
+        for (auto &p : pending_rtcp)
+            co_await srtp->send_rtcp(p);
+
+        auto track = receiver->track();
+        if (!track)
+            continue;
+
+        // Build RR for SSRCs belonging to this receiver's track
+        std::vector<uint8_t> compound;
+        for (auto &[ssrc, st] : conn->_stream_stats) {
+            if (st.packets_received == 0)
+                continue;
+
+            // Only report on SSRCs associated with this receiver's track
+            auto it_track = conn->_ssrc_track_map.find(ssrc);
+            if (it_track == conn->_ssrc_track_map.end() ||
+                it_track->second != track)
+                continue;
+
+            uint32_t extended_max = st.cycles + st.max_seq;
+            uint32_t expected_interval =
+                st.packets_expected - st.expected_prior;
+            uint32_t received_interval =
+                st.packets_received - st.received_prior;
+            int lost_interval =
+                static_cast<int>(expected_interval) -
+                static_cast<int>(received_interval);
+            uint8_t fraction = 0;
+            if (expected_interval > 0 && lost_interval > 0)
+                fraction = static_cast<uint8_t>(
+                    (lost_interval << 8) / expected_interval);
+            int32_t cumulative_lost =
+                static_cast<int32_t>(st.packets_expected) -
+                static_cast<int32_t>(st.packets_received);
+            if (cumulative_lost < 0)
+                cumulative_lost = 0;
+            if (cumulative_lost > 0x7FFFFF)
+                cumulative_lost = 0x7FFFFF;
+
+            uint32_t jitter = static_cast<uint32_t>(st.jitter_q4 >> 4);
+            uint32_t lsr =
+                static_cast<uint32_t>((st.lsr >> 16) & 0xFFFFFFFF);
+            uint32_t dlsr = 0;
+            if (st.lsr != 0) {
+                auto elapsed = std::chrono::duration_cast<
+                    std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - st.lsr_time)
+                                   .count();
+                double d = elapsed / 1000000.0;
+                if (d > 0 && d < 65536)
+                    dlsr = static_cast<uint32_t>(d * 65536);
+            }
+
+            size_t rr_size = 8 + 24;
+            std::vector<uint8_t> rr(rr_size);
+            rr[0] = (2 << 6) | 1;
+            rr[1] = rtcp::packet_type::RR;
+            uint16_t rr_words = static_cast<uint16_t>(rr_size / 4 - 1);
+            asioice::binary::write_big<uint16_t>(rr.data() + 2, rr_words);
+            asioice::binary::write_big<uint32_t>(rr.data() + 4, 0);
+            asioice::binary::write_big<uint32_t>(rr.data() + 8, ssrc);
+            rr[12] = fraction;
+            rr[13] = static_cast<uint8_t>((cumulative_lost >> 16) & 0xFF);
+            rr[14] = static_cast<uint8_t>((cumulative_lost >> 8) & 0xFF);
+            rr[15] = static_cast<uint8_t>(cumulative_lost & 0xFF);
+            asioice::binary::write_big<uint32_t>(rr.data() + 16,
+                                                  extended_max);
+            asioice::binary::write_big<uint32_t>(rr.data() + 20, jitter);
+            asioice::binary::write_big<uint32_t>(rr.data() + 24, lsr);
+            asioice::binary::write_big<uint32_t>(rr.data() + 28, dlsr);
+
+            compound.insert(compound.end(), rr.begin(), rr.end());
+
+            st.expected_prior = st.packets_expected;
+            st.received_prior = st.packets_received;
+        }
+
+        if (compound.empty())
+            continue;
+
+        auto send_result = co_await srtp->send_rtcp(compound);
+        if (std::get<0>(send_result))
+            co_return;
+    }
+}
+
 void connection_impl::_start_sender_loops() {
     if (!_srtp_transport)
         return;
@@ -698,10 +1129,16 @@ void connection_impl::_start_sender_loops() {
         if (!track)
             continue;
 
-        sender->_send_loop = stdexec::spawn_future(
+        sender->_send_rtp_loop = stdexec::spawn_future(
             stdexec::starts_on(
                 stdexec::inline_scheduler{},
                 _sender_send_loop(sender->weak_from_this(), _srtp_transport)),
+            _scope.get_token());
+
+        sender->_send_rtcp_loop = stdexec::spawn_future(
+            stdexec::starts_on(
+                stdexec::inline_scheduler{},
+                _sender_rtcp_loop(sender->weak_from_this(), _srtp_transport)),
             _scope.get_token());
     }
 }

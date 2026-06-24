@@ -24,6 +24,7 @@ static sdp_direction negotiate_direction(sdp_direction local,
 std::vector<sdp_codec> default_video_codecs() {
     return {
         {96, "VP8", 90000, ""},
+        {97, "rtx", 90000, "apt=96"},
     };
 }
 
@@ -83,7 +84,19 @@ sdp_media rtp_transceiver::to_offer_sdp_media() const {
     for (const auto &c : _codecs) {
         m.payload_types.push_back(c.payload_type);
         m.rtpmaps.push_back(c);
+        if (!c.encoding_params.empty())
+            m.fmtps.push_back(std::to_string(c.payload_type) +
+                              " " + c.encoding_params);
     }
+
+    // Default RTP header extensions per media kind
+    std::string media = infer_media_type(_codecs);
+    if (media == "video")
+        m.extmaps = {
+            "1 urn:ietf:params:rtp-hdrext:sdes:mid",
+            "3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time"};
+    else if (media == "audio")
+        m.extmaps = {"1 urn:ietf:params:rtp-hdrext:sdes:mid"};
 
     return m;
 }
@@ -115,7 +128,9 @@ sdp_media rtp_transceiver::to_answer_sdp_media(const sdp_media &remote) const {
                 continue;
             const auto &remote_codec = remote.rtpmaps[j];
             if (local_codec.name == remote_codec.name &&
-                local_codec.clock_rate == remote_codec.clock_rate) {
+                local_codec.clock_rate == remote_codec.clock_rate &&
+                local_codec.encoding_params ==
+                    remote_codec.encoding_params) {
                 m.payload_types.push_back(remote_codec.payload_type);
                 m.rtpmaps.push_back(remote_codec);
                 used[j] = true;

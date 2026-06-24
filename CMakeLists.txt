@@ -51,6 +51,7 @@ endif()
 target_include_directories(asiortc PUBLIC ${STDEXEC_DIR})
 target_include_directories(asiortc PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_include_directories(asiortc PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(asiortc PRIVATE asioice OpenSSL::SSL OpenSSL::Crypto srtp3)
 
 add_library(asiortc_compile_flags INTERFACE)
 target_compile_options(asiortc_compile_flags INTERFACE

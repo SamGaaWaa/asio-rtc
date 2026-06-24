@@ -59,6 +59,28 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
         std::shared_ptr<media_track> track, std::vector<std::string> msids,
         std::shared_ptr<rtp_transceiver> transceiver)>;
 
+    using encoder_factory = std::function<
+        std::shared_ptr<codecs::encoder>(int bitrate)>;
+    using codec_registry = std::unordered_map<std::string, encoder_factory>;
+
+    struct _remote_stream_stats {
+        uint32_t ssrc = 0;
+        uint32_t max_seq = 0;
+        uint32_t cycles = 0;
+        uint32_t base_seq = 0;
+        bool base_seq_set = false;
+        uint32_t packets_expected = 0;
+        uint32_t packets_received = 0;
+        uint32_t expected_prior = 0;
+        uint32_t received_prior = 0;
+        int jitter_q4 = 0;
+        uint32_t last_arrival_ts = 0;
+        uint32_t last_rtp_ts = 0;
+        uint64_t lsr = 0;
+        int consecutive_lost = 0;
+        std::chrono::steady_clock::time_point lsr_time{};
+    };
+
     connection_impl(executor_type ex, asiortc::configuration cfg = {});
 
     connection_impl(const connection_impl &) = delete;
@@ -173,6 +195,8 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
     }
     void on_track(on_track_cb cb);
 
+    void register_encoder(std::string name, encoder_factory factory);
+
     auto sendto(net::const_buffer data, uint8_t component) {
         return _agent.sendto(data, component);
     }
@@ -193,6 +217,11 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
     static asioice::task<void>
     _sender_send_loop(std::weak_ptr<rtp_sender> weak_sender,
                       std::shared_ptr<srtp_transport_type> srtp);
+    static asioice::task<void>
+    _sender_rtcp_loop(std::weak_ptr<rtp_sender> weak_sender,
+                      std::shared_ptr<srtp_transport_type> srtp);
+    static asioice::task<void>
+    _receiver_rtcp_loop(std::weak_ptr<rtp_receiver> weak_receiver);
 
     executor_type _executor;
     stdexec::counting_scope _scope{};
@@ -208,8 +237,11 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
     std::optional<datachannel_manager_type> _data_channel_manager{};
 
     std::vector<std::shared_ptr<rtp_transceiver>> _transceivers{};
+    std::vector<std::vector<uint8_t>> _pending_rtcp{};
+    std::vector<std::vector<uint8_t>> _pending_rtx{};
     std::unordered_map<uint32_t, std::shared_ptr<media_track_impl>>
         _ssrc_track_map{};
+    std::unordered_map<uint32_t, _remote_stream_stats> _stream_stats{};
 
     std::optional<session_description> _local_desc{};
     std::optional<session_description> _remote_desc{};
@@ -226,6 +258,7 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
 
     on_data_channel_cb _on_remote_channel_cb;
     on_track_cb _on_track_cb;
+    codec_registry _codec_registry;
     bool _need_sctp{false};
 
     srtp_transport_base::on_new_ssrc_callback_type _pending_srtp_new_ssrc_cb;

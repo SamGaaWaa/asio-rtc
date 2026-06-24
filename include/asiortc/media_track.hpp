@@ -20,6 +20,8 @@ struct media_frame {
     uint32_t timestamp = 0;
     uint8_t payload_type = 0;
     bool marker = false;
+    int width = 0;
+    int height = 0;
     std::vector<uint8_t> data;
 };
 

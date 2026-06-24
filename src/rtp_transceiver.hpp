@@ -6,7 +6,10 @@
 #include <vector>
 
 #include "any_sender.hpp"
+#include "codecs/base.hpp"
 #include "sdp.hpp"
+
+#include <functional>
 
 namespace asiortc {
 
@@ -55,7 +58,11 @@ struct rtp_sender : std::enable_shared_from_this<rtp_sender> {
     }
 
     bool stopped() const noexcept { return _stopped; }
-    void stop() { _stopped = true; }
+    void stop() {
+        _stopped = true;
+        _send_rtp_loop.reset();
+        _send_rtcp_loop.reset();
+    }
 
     std::shared_ptr<rtp_transceiver> transceiver() const noexcept {
         return _transceiver.lock();
@@ -81,8 +88,31 @@ struct rtp_sender : std::enable_shared_from_this<rtp_sender> {
     bool _stopped = false;
     uint16_t _seq = 0;
     rtp_send_parameters _parameters{};
-    std::optional<any_sender<void>> _send_loop{};
+    std::optional<any_sender<void>> _send_rtp_loop{};
+    std::optional<any_sender<void>> _send_rtcp_loop{};
     std::vector<std::string> _msids{};
+    std::shared_ptr<codecs::encoder> _encoder{};
+    bool _force_keyframe = false;
+
+    uint32_t _packet_count = 0;
+    uint32_t _octet_count = 0;
+    uint64_t _ntp_timestamp = 0;
+    uint32_t _rtp_timestamp = 0;
+
+    uint16_t _seq_base = 0;
+    uint64_t _ntp_base = 0;
+
+    uint32_t _rtx_ssrc = 0;
+    uint8_t _rtx_pt = 97;
+    uint16_t _rtx_seq = 0;
+
+    static constexpr size_t RTP_HISTORY = 128;
+    struct _history_entry {
+        std::vector<uint8_t> payload;
+        uint16_t seq = 0;
+        uint32_t timestamp = 0;
+    };
+    std::array<std::optional<_history_entry>, RTP_HISTORY> _history{};
 };
 
 struct rtp_receiver : std::enable_shared_from_this<rtp_receiver> {
@@ -116,6 +146,7 @@ struct rtp_receiver : std::enable_shared_from_this<rtp_receiver> {
     std::weak_ptr<rtp_transceiver> _transceiver{};
     bool _stopped = false;
     rtp_receive_parameters _parameters{};
+    std::optional<any_sender<void>> _rtcp_loop{};
 };
 
 struct rtp_transceiver_init {

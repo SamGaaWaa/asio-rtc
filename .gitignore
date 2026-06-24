@@ -2,3 +2,4 @@ clang-build/
 build-fast/
 boost_clang/
 boost*
+aiortc/

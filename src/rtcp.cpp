@@ -310,4 +310,146 @@ uint8_t rtcp_packet::get_packet_type(const void *data,
     return buf[1];
 }
 
+// --- RTPFB NACK ---
+
+std::vector<uint8_t> rtcp_rtpfb::bytes() const {
+    size_t n = lost.size();
+    size_t hdr = 12;  // RTCP header + sender_ssrc + media_ssrc
+    size_t fci = n * 4;
+    size_t total = hdr + fci;
+
+    std::vector<uint8_t> data(total, 0);
+    // RTCP common header
+    data[0] = (2 << 6) | 1;  // V=2, RC=1
+    data[1] = packet_type::RTPFB;
+    uint16_t len_words = static_cast<uint16_t>((total / 4) - 1);
+    asioice::binary::write_big<uint16_t>(data.data() + 2, len_words);
+    // Feedback header
+    asioice::binary::write_big<uint32_t>(data.data() + 4, sender_ssrc);
+    asioice::binary::write_big<uint32_t>(data.data() + 8, media_ssrc);
+
+    for (size_t i = 0; i < n; ++i) {
+        asioice::binary::write_big<uint16_t>(data.data() + 12 + i * 4,
+                                             lost[i]);
+        // BLP = 0 (single loss)
+    }
+    return data;
+}
+
+// --- PSFB (PLI / FIR / REMB) ---
+
+std::vector<uint8_t> rtcp_psfb::bytes() const {
+    size_t hdr = 12;
+    size_t total = hdr + fci.size();
+
+    std::vector<uint8_t> data(total, 0);
+    data[0] = (2 << 6) | fmt;
+    data[1] = packet_type::PSFB;
+    uint16_t len_words = static_cast<uint16_t>((total / 4) - 1);
+    asioice::binary::write_big<uint16_t>(data.data() + 2, len_words);
+    asioice::binary::write_big<uint32_t>(data.data() + 4, sender_ssrc);
+    asioice::binary::write_big<uint32_t>(data.data() + 8, media_ssrc);
+    if (!fci.empty())
+        std::memcpy(data.data() + 12, fci.data(), fci.size());
+    return data;
+}
+
+// --- REMB FCI ---
+
+std::pair<uint32_t, std::vector<uint32_t>>
+parse_remb(const uint8_t *data, size_t len) {
+    std::pair<uint32_t, std::vector<uint32_t>> result{0, {}};
+    if (len < 8)
+        return result;
+    if (data[0] != 'R' || data[1] != 'E' || data[2] != 'M' ||
+        data[3] != 'B')
+        return result;
+    uint8_t num_ssrc = data[4];
+    uint8_t br_exp = (data[5] >> 2) & 0x3F;
+    uint32_t br_mantissa =
+        ((data[5] & 0x03) << 16) | (data[6] << 8) | data[7];
+    result.first = br_mantissa << br_exp;
+
+    size_t pos = 8;
+    for (uint8_t i = 0; i < num_ssrc && pos + 4 <= len; ++i) {
+        result.second.push_back(
+            asioice::binary::ntoh<uint32_t>(*reinterpret_cast<const uint32_t *>(data + pos)));
+        pos += 4;
+    }
+    return result;
+}
+
+std::vector<uint8_t> pack_remb(uint32_t bitrate,
+                                const std::vector<uint32_t> &ssrcs) {
+    uint8_t exp = 0;
+    while (bitrate > 0x3FFFF) {
+        bitrate >>= 1;
+        ++exp;
+    }
+    uint32_t mantissa = bitrate & 0x3FFFF;
+
+    size_t size = 8 + ssrcs.size() * 4;
+    std::vector<uint8_t> data(size);
+    data[0] = 'R';
+    data[1] = 'E';
+    data[2] = 'M';
+    data[3] = 'B';
+    data[4] = static_cast<uint8_t>(ssrcs.size());
+    data[5] = static_cast<uint8_t>(exp << 2) |
+              static_cast<uint8_t>((mantissa >> 16) & 0x03);
+    data[6] = static_cast<uint8_t>((mantissa >> 8) & 0xFF);
+    data[7] = static_cast<uint8_t>(mantissa & 0xFF);
+    for (size_t i = 0; i < ssrcs.size(); ++i)
+        asioice::binary::write_big<uint32_t>(data.data() + 8 + i * 4,
+                                             ssrcs[i]);
+    return data;
+}
+
+// --- SDES ---
+
+std::vector<uint8_t> sdes_chunk::bytes() const {
+    std::vector<uint8_t> data;
+    // SSRC
+    data.resize(4);
+    asioice::binary::write_big<uint32_t>(data.data(), ssrc);
+    // CNAME item: type=1, length, value
+    size_t cname_len = cname.size();
+    data.push_back(1);
+    data.push_back(static_cast<uint8_t>(cname_len));
+    data.insert(data.end(), cname.begin(), cname.end());
+    // Null terminator (end of chunk)
+    data.push_back(0);
+    data.push_back(0);
+    // Pad to 4-byte boundary
+    while (data.size() % 4)
+        data.push_back(0);
+
+    // RTCP header
+    std::vector<uint8_t> full(4 + data.size());
+    full[0] = (2 << 6) | 1;  // V=2, SC=1
+    full[1] = packet_type::SDES;
+    uint16_t len_words = static_cast<uint16_t>((full.size() / 4) - 1);
+    asioice::binary::write_big<uint16_t>(full.data() + 2, len_words);
+    std::memcpy(full.data() + 4, data.data(), data.size());
+    return full;
+}
+
+std::vector<uint16_t> parse_nack(const uint8_t *data, size_t len) {
+    std::vector<uint16_t> lost;
+    const uint8_t *end = data + len;
+    while (data + 4 <= end) {
+        uint16_t pid = asioice::binary::ntoh<uint16_t>(
+            *reinterpret_cast<const uint16_t *>(data));
+        uint16_t blp = asioice::binary::ntoh<uint16_t>(
+            *reinterpret_cast<const uint16_t *>(data + 2));
+        lost.push_back(pid);
+        for (int i = 0; i < 16; ++i) {
+            if (blp & (1 << i))
+                lost.push_back(pid + i + 1);
+        }
+        data += 4;
+    }
+    return lost;
+}
+
 } // namespace asiortc::rtcp

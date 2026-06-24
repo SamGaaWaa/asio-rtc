@@ -1,12 +1,11 @@
 #pragma once
 
-#include <deque>
 #include <memory>
-#include <mutex>
 #include <string>
 
 #include "asiortc/media_track.hpp"
 #include "asioice/config.hpp"
+#include "jitter_buffer.hpp"
 
 #if ASIOICE_USE_BOOST_ASIO > 0
 #include <boost/asio/as_tuple.hpp>
@@ -43,8 +42,7 @@ struct media_track_impl : public media_track {
     track_state _state = track_state::live;
     net::io_context &_ctx;
 
-    std::deque<media_frame> _queue;
-    std::mutex _mtx;
+    jitter_buffer _jitter;
 };
 
 } // namespace asiortc

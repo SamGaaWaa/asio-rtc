@@ -505,6 +505,7 @@ asioice::task<void> connection_impl::do_connect() {
                             frame.timestamp = pkt->timestamp;
                             frame.payload_type = pkt->payload_type;
                             frame.marker = pkt->marker;
+                            frame.sequence_number = pkt->sequence_number;
                             frame.data.assign(payload_start,
                                               payload_start + payload_len);
                             it->second->push_frame(std::move(frame));

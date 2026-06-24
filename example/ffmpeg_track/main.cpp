@@ -23,12 +23,15 @@ namespace websocket = beast::websocket;
 #include "json.hpp"
 
 #include "codecs/vpx.hpp"
+#include "codecs/opus.hpp"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/opt.h>
+#include <libavutil/channel_layout.h>
+#include <libavutil/samplefmt.h>
 }
 
 #include <chrono>
@@ -213,6 +216,184 @@ struct ffmpeg_track : public media_track {
     int _stream_idx = -1;
 };
 
+struct ffmpeg_audio_track : public media_track {
+    ffmpeg_audio_track(const std::string &filepath, net::io_context &ctx)
+        : _id(filepath + "_audio"), _timer(ctx) {
+
+        int ret = avformat_open_input(&_fmt_ctx, filepath.c_str(),
+                                       nullptr, nullptr);
+        if (ret < 0) {
+            std::cerr << "audio: avformat_open_input failed\n";
+            _state = track_state::ended;
+            return;
+        }
+
+        avformat_find_stream_info(_fmt_ctx, nullptr);
+        _stream_idx = av_find_best_stream(_fmt_ctx, AVMEDIA_TYPE_AUDIO,
+                                          -1, -1, nullptr, 0);
+        if (_stream_idx < 0) {
+            std::cerr << "audio: no audio stream found\n";
+            _state = track_state::ended;
+            return;
+        }
+
+        AVStream *stream = _fmt_ctx->streams[_stream_idx];
+        const AVCodec *codec =
+            avcodec_find_decoder(stream->codecpar->codec_id);
+        _codec_ctx = avcodec_alloc_context3(codec);
+        avcodec_parameters_to_context(_codec_ctx, stream->codecpar);
+        if (_codec_ctx->sample_rate != 48000) {
+            std::cerr << "audio: sample rate " << _codec_ctx->sample_rate
+                      << " not 48000, skipping audio\n";
+            avcodec_free_context(&_codec_ctx);
+            avformat_close_input(&_fmt_ctx);
+            _fmt_ctx = nullptr;
+            _state = track_state::ended;
+            return;
+        }
+        _codec_ctx->request_sample_fmt = AV_SAMPLE_FMT_S16;
+        if (avcodec_open2(_codec_ctx, codec, nullptr) < 0) {
+            std::cerr << "audio: avcodec_open2 failed\n";
+            _state = track_state::ended;
+            return;
+        }
+
+        _channels = _codec_ctx->ch_layout.nb_channels;
+        if (_channels < 1 || _channels > 2)
+            _channels = 2;
+
+        std::cout << "ffmpeg_audio_track: sr=48000 ch=" << _channels
+                  << " file=" << filepath << '\n';
+    }
+
+    ~ffmpeg_audio_track() {
+        if (_codec_ctx) avcodec_free_context(&_codec_ctx);
+        if (_fmt_ctx) avformat_close_input(&_fmt_ctx);
+    }
+
+    media_kind kind() const noexcept override { return media_kind::audio; }
+    std::string id() const noexcept override { return _id; }
+    track_state ready_state() const noexcept override { return _state; }
+    void stop() override { _state = track_state::ended; }
+
+    asioice::task<std::optional<media_frame>> recv() override {
+        _timer.expires_after(std::chrono::milliseconds(20));
+        auto [ec] = co_await _timer.async_wait(
+            net::as_tuple(utils::use_sender));
+        if (ec || _state == track_state::ended)
+            co_return std::nullopt;
+
+        int frame_bytes = 960 * _channels * 2;
+        while (static_cast<int>(_pcm_buffer.size()) < frame_bytes)
+            _decode_more();
+
+        media_frame mf;
+        mf.kind = media_kind::audio;
+        mf.ssrc = 0xBEEF;
+        mf.timestamp = _pts;
+        mf.payload_type = 111;
+        mf.data.assign(_pcm_buffer.begin(),
+                       _pcm_buffer.begin() + frame_bytes);
+        _pcm_buffer.erase(_pcm_buffer.begin(),
+                          _pcm_buffer.begin() + frame_bytes);
+        _pts += 960;
+        co_return mf;
+    }
+
+  private:
+    void _decode_more() {
+        if (_state == track_state::ended)
+            return;
+
+        while (true) {
+            AVPacket *pkt = av_packet_alloc();
+            int ret = av_read_frame(_fmt_ctx, pkt);
+            if (ret == AVERROR_EOF || ret < 0) {
+                av_packet_unref(pkt);
+                av_packet_free(&pkt);
+                av_seek_frame(_fmt_ctx, _stream_idx, 0,
+                              AVSEEK_FLAG_BACKWARD);
+                avcodec_flush_buffers(_codec_ctx);
+                return;
+            }
+
+            if (pkt->stream_index != _stream_idx) {
+                av_packet_unref(pkt);
+                av_packet_free(&pkt);
+                continue;
+            }
+
+            ret = avcodec_send_packet(_codec_ctx, pkt);
+            av_packet_unref(pkt);
+            av_packet_free(&pkt);
+            if (ret < 0)
+                continue;
+
+            AVFrame *frame = av_frame_alloc();
+            ret = avcodec_receive_frame(_codec_ctx, frame);
+            if (ret == AVERROR(EAGAIN)) {
+                av_frame_free(&frame);
+                continue;
+            }
+            if (ret < 0) {
+                av_frame_free(&frame);
+                return;
+            }
+
+            int out_channels = frame->ch_layout.nb_channels;
+            int sample_size = av_get_bytes_per_sample(
+                static_cast<AVSampleFormat>(frame->format));
+            int data_size = frame->nb_samples * out_channels * sample_size;
+
+            bool planar =
+                av_sample_fmt_is_planar(static_cast<AVSampleFormat>(frame->format));
+            size_t old = _pcm_buffer.size();
+            _pcm_buffer.resize(old + frame->nb_samples * _channels * 2);
+
+            if (!planar && out_channels == _channels) {
+                std::memcpy(_pcm_buffer.data() + old, frame->data[0],
+                            data_size);
+            } else if (planar) {
+                for (int ch = 0; ch < _channels && ch < out_channels; ++ch)
+                    for (int s = 0; s < frame->nb_samples; ++s)
+                        std::memcpy(_pcm_buffer.data() + old +
+                                        (s * _channels + ch) * 2,
+                                    frame->data[ch] + s * sample_size,
+                                    std::min(sample_size, 2));
+            } else {
+                for (int s = 0; s < frame->nb_samples; ++s) {
+                    for (int ch = 0; ch < _channels && ch < out_channels; ++ch)
+                        std::memcpy(_pcm_buffer.data() + old +
+                                        (s * _channels + ch) * 2,
+                                    frame->data[0] +
+                                        (s * out_channels + ch) *
+                                            sample_size,
+                                    std::min(sample_size, 2));
+                    if (out_channels < _channels) {
+                        std::memset(_pcm_buffer.data() + old +
+                                        (s * _channels + 1) * 2,
+                                    0, 2);
+                    }
+                }
+            }
+
+            av_frame_free(&frame);
+            return;
+        }
+    }
+
+    std::string _id;
+    track_state _state = track_state::live;
+    uint32_t _pts = 0;
+    int _channels = 2;
+    net::steady_timer _timer;
+    std::vector<uint8_t> _pcm_buffer;
+
+    AVFormatContext *_fmt_ctx = nullptr;
+    AVCodecContext *_codec_ctx = nullptr;
+    int _stream_idx = -1;
+};
+
 static task<void> ffmpeg_session(net::io_context &ctx, ws_ptr ws) {
     asioice::utils::scope_guard on_exit([]()noexcept {
         std::cout << "ffmpeg_session: exited\n";
@@ -231,6 +412,10 @@ static task<void> ffmpeg_session(net::io_context &ctx, ws_ptr ws) {
 
     conn->register_encoder("VP8", [](int bps) {
         return codecs::make_vp8_encoder(bps ? bps : 1000000);
+    });
+    conn->register_encoder("opus", [](int bps) {
+        (void)bps;
+        return codecs::make_opus_encoder(64000);
     });
 
     conn->on_track([](std::shared_ptr<rtp_receiver> receiver,
@@ -258,6 +443,18 @@ static task<void> ffmpeg_session(net::io_context &ctx, ws_ptr ws) {
     video_tr->sender()->set_track(track);
     std::cout << "Set ffmpeg_track on sender mid=" << video_tr->mid()
               << '\n';
+
+    auto audio_tr = conn->add_transceiver(
+        media_kind::audio,
+        {.direction = sdp_direction::sendonly,
+         .streams = {"mic"}});
+
+    auto audio_track = std::make_shared<ffmpeg_audio_track>(s_test_file, ctx);
+    if (!audio_track->stopped()) {
+        audio_tr->sender()->set_track(audio_track);
+        std::cout << "Set ffmpeg_audio_track on sender mid="
+                  << audio_tr->mid() << '\n';
+    }
 
     auto offer = co_await conn->create_offer();
     co_await conn->set_local_description(

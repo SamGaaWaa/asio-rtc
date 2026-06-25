@@ -93,10 +93,11 @@ sdp_media rtp_transceiver::to_offer_sdp_media() const {
     std::string media = infer_media_type(_codecs);
     if (media == "video")
         m.extmaps = {
-            "1 urn:ietf:params:rtp-hdrext:sdes:mid",
-            "3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time"};
+            {1, "urn:ietf:params:rtp-hdrext:sdes:mid"},
+            {3,
+             "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time"}};
     else if (media == "audio")
-        m.extmaps = {"1 urn:ietf:params:rtp-hdrext:sdes:mid"};
+        m.extmaps = {{1, "urn:ietf:params:rtp-hdrext:sdes:mid"}};
 
     return m;
 }

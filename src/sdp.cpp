@@ -122,6 +122,56 @@ std::optional<sdp_codec> parse_rtpmap(std::string_view value) {
     return c;
 }
 
+std::optional<sdp_extmap> parse_extmap(std::string_view value) {
+    auto space = value.find(' ');
+    if (space == std::string_view::npos)
+        return std::nullopt;
+    auto id_sv = value.substr(0, space);
+    auto uri = value.substr(space + 1);
+
+    if (uri.empty())
+        return std::nullopt;
+
+    auto slash = id_sv.find('/');
+    if (slash != std::string_view::npos)
+        id_sv = id_sv.substr(0, slash);
+
+    auto id = parse_uint8(id_sv);
+    if (!id || *id == 0)
+        return std::nullopt;
+
+    sdp_extmap e;
+    e.id = *id;
+    e.uri = std::string(uri);
+    return e;
+}
+
+std::optional<sdp_rtcp_fb> parse_rtcpfb(std::string_view value) {
+    auto space = value.find(' ');
+    if (space == std::string_view::npos)
+        return std::nullopt;
+    auto pt_sv = value.substr(0, space);
+    auto rest = value.substr(space + 1);
+
+    auto pt = parse_uint8(pt_sv);
+    if (!pt)
+        return std::nullopt;
+
+    auto space2 = rest.find(' ');
+    std::string_view type_sv = rest;
+    std::string_view subtype_sv;
+    if (space2 != std::string_view::npos) {
+        type_sv = rest.substr(0, space2);
+        subtype_sv = rest.substr(space2 + 1);
+    }
+
+    sdp_rtcp_fb fb;
+    fb.payload_type = *pt;
+    fb.type = std::string(type_sv);
+    fb.subtype = std::string(subtype_sv);
+    return fb;
+}
+
 void apply_session_attr(session_description &session, std::string_view name,
                         std::string_view value) {
     std::string vstr(value);
@@ -143,6 +193,13 @@ void apply_session_attr(session_description &session, std::string_view name,
         session.mid = vstr;
     } else if (name == "candidate") {
         session.candidates.push_back("candidate:" + vstr);
+    } else if (name == "msid-semantic") {
+        auto parts = split_whitespace(value);
+        if (!parts.empty()) {
+            session.msid_semantic = std::string(parts[0]);
+            for (std::size_t i = 1; i < parts.size(); ++i)
+                session.msid_tokens.emplace_back(parts[i]);
+        }
     } else {
         session.attributes.emplace_back(std::string(name), vstr);
     }
@@ -182,13 +239,21 @@ void apply_media_attr(sdp_media &media, std::string_view name,
     } else if (name == "fmtp") {
         media.fmtps.push_back(vstr);
     } else if (name == "extmap") {
-        media.extmaps.push_back(vstr);
+        auto e = parse_extmap(value);
+        if (e)
+            media.extmaps.push_back(*e);
+        else
+            media.attributes.emplace_back("extmap", vstr);
     } else if (name == "ssrc") {
         media.ssrcs.push_back(vstr);
     } else if (name == "msid") {
         media.msids.push_back(vstr);
     } else if (name == "rtcp-fb") {
-        media.attributes.emplace_back("rtcp-fb", vstr);
+        auto fb = parse_rtcpfb(value);
+        if (fb)
+            media.rtcp_fbs.push_back(*fb);
+        else
+            media.attributes.emplace_back("rtcp-fb", vstr);
     } else if (name == "sctpmap") {
         media.sctpmap = vstr;
     } else if (name == "sctp-port") {
@@ -325,9 +390,19 @@ std::string session_description::to_string() const {
     out += std::to_string(sdp.timing.stop);
     out += "\r\n";
 
+    if (!sdp.msid_semantic.empty()) {
+        out += "a=msid-semantic:";
+        out += sdp.msid_semantic;
+        for (const auto &t : sdp.msid_tokens) {
+            out += " ";
+            out += t;
+        }
+        out += "\r\n";
+    }
+
     if (!sdp.bundle_groups.empty()) {
         out += "a=group:BUNDLE";
-        for (auto &g : sdp.bundle_groups) {
+        for (const auto &g : sdp.bundle_groups) {
             out += " ";
             out += g;
         }
@@ -343,16 +418,16 @@ std::string session_description::to_string() const {
         out += "a=setup:" + sdp.setup + "\r\n";
     if (!sdp.mid.empty())
         out += "a=mid:" + sdp.mid + "\r\n";
-    for (auto &c : sdp.candidates)
+    for (const auto &c : sdp.candidates)
         out += "a=" + c + "\r\n";
-    for (auto &[name, value] : sdp.attributes) {
+    for (const auto &[name, value] : sdp.attributes) {
         out += "a=" + name;
         if (!value.empty())
             out += ":" + value;
         out += "\r\n";
     }
 
-    for (auto &m : sdp.medias) {
+    for (const auto &m : sdp.medias) {
         out += "m=";
         out += m.media_type;
         out += " ";
@@ -360,7 +435,7 @@ std::string session_description::to_string() const {
         out += " ";
         out += m.proto;
         if (!m.fmts.empty()) {
-            for (auto &fmt : m.fmts) {
+            for (const auto &fmt : m.fmts) {
                 out += " ";
                 out += fmt;
             }
@@ -403,7 +478,7 @@ std::string session_description::to_string() const {
         if (m.rtcp_mux)
             out += "a=rtcp-mux\r\n";
 
-        for (auto &c : m.rtpmaps) {
+        for (const auto &c : m.rtpmaps) {
             out += "a=rtpmap:";
             out += std::to_string(c.payload_type);
             out += " ";
@@ -416,13 +491,29 @@ std::string session_description::to_string() const {
             }
             out += "\r\n";
         }
-        for (auto &f : m.fmtps)
+        for (const auto &f : m.fmtps)
             out += "a=fmtp:" + f + "\r\n";
-        for (auto &e : m.extmaps)
-            out += "a=extmap:" + e + "\r\n";
-        for (auto &s : m.ssrcs)
+        for (const auto &e : m.extmaps) {
+            out += "a=extmap:";
+            out += std::to_string(e.id);
+            out += " ";
+            out += e.uri;
+            out += "\r\n";
+        }
+        for (const auto &fb : m.rtcp_fbs) {
+            out += "a=rtcp-fb:";
+            out += std::to_string(fb.payload_type);
+            out += " ";
+            out += fb.type;
+            if (!fb.subtype.empty()) {
+                out += " ";
+                out += fb.subtype;
+            }
+            out += "\r\n";
+        }
+        for (const auto &s : m.ssrcs)
             out += "a=ssrc:" + s + "\r\n";
-        for (auto &msid : m.msids)
+        for (const auto &msid : m.msids)
             out += "a=msid:" + msid + "\r\n";
 
         if (!m.ice_ufrag.empty())
@@ -433,7 +524,7 @@ std::string session_description::to_string() const {
             out += "a=fingerprint:" + m.fingerprint + "\r\n";
         if (!m.setup.empty())
             out += "a=setup:" + m.setup + "\r\n";
-        for (auto &c : m.candidates)
+        for (const auto &c : m.candidates)
             out += "a=" + c + "\r\n";
 
         if (!m.sctpmap.empty())
@@ -441,7 +532,7 @@ std::string session_description::to_string() const {
         if (m.sctp_port != 0)
             out += "a=sctp-port:" + std::to_string(m.sctp_port) + "\r\n";
 
-        for (auto &[name, value] : m.attributes) {
+        for (const auto &[name, value] : m.attributes) {
             out += "a=" + name;
             if (!value.empty())
                 out += ":" + value;

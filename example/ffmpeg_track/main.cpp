@@ -406,7 +406,7 @@ static task<void> ffmpeg_session(net::io_context &ctx, ws_ptr ws) {
 
     auto conn = std::make_shared<connection_impl>(ctx.get_executor(), configuration{
         .ice_servers{
-            .urls = {"stun:stun.l.google.com:19302"}
+            .urls = {"stun:14.29.112.241:20002"}
         }
     });
 
@@ -578,7 +578,7 @@ const v=document.getElementById('v');
 function L(m){log.textContent+=m+'\n';log.scrollTop=log.scrollHeight}
 (async()=>{
  const ws=new WebSocket('ws://'+location.host+'/ws');
- const pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});
+ const pc=new RTCPeerConnection({iceServers:[{urls:'stun:14.29.112.241:20002'}]});
  pc.ontrack=e=>{L('track: '+e.track.kind);v.srcObject=e.streams[0]};
  pc.oniceconnectionstatechange=()=>L('ICE: '+pc.iceConnectionState);
  pc.onconnectionstatechange=()=>L('Conn: '+pc.connectionState);

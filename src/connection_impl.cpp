@@ -808,6 +808,26 @@ asioice::task<session_description> connection_impl::create_offer() {
     for (int i = 0; i < mid_counter; ++i)
         offer.bundle_groups.push_back(std::to_string(i));
 
+    {
+        std::vector<std::string> streams;
+        for (auto &t : _transceivers) {
+            auto msids = t->sender() ? t->sender()->msids()
+                                     : std::vector<std::string>{};
+            for (auto &ms : msids) {
+                auto dash = ms.find('-');
+                if (dash != std::string::npos)
+                    ms.resize(dash);
+                if (std::find(streams.begin(), streams.end(), ms) ==
+                    streams.end())
+                    streams.push_back(std::move(ms));
+            }
+        }
+        if (!streams.empty()) {
+            offer.msid_semantic = "WMS";
+            offer.msid_tokens = std::move(streams);
+        }
+    }
+
     offer.attributes.emplace_back("ice-options", "trickle");
 
     co_return offer;

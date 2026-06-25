@@ -17,6 +17,17 @@ struct sdp_codec {
     std::string encoding_params;
 };
 
+struct sdp_extmap {
+    uint8_t id = 0;
+    std::string uri;
+};
+
+struct sdp_rtcp_fb {
+    uint8_t payload_type = 0;
+    std::string type;
+    std::string subtype;
+};
+
 struct sdp_media {
     std::string media_type;
     uint16_t port = 9;
@@ -39,7 +50,8 @@ struct sdp_media {
 
     std::vector<sdp_codec> rtpmaps;
     std::vector<std::string> fmtps;
-    std::vector<std::string> extmaps;
+    std::vector<sdp_extmap> extmaps;
+    std::vector<sdp_rtcp_fb> rtcp_fbs;
     std::vector<std::string> ssrcs;
     std::vector<std::string> msids;
 
@@ -81,6 +93,9 @@ struct session_description {
     std::vector<std::string> candidates;
     std::string mid;
     std::vector<std::string> bundle_groups;
+
+    std::string msid_semantic;
+    std::vector<std::string> msid_tokens;
 
     std::vector<sdp_media> medias;
 

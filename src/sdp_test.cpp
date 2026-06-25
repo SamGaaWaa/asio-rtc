@@ -120,16 +120,18 @@ static void test_parse_video_offer() {
   ASSERT(m.ssrcs[0] == "1234567890 cname:test");
 
   ASSERT(m.extmaps.size() == 1);
+  ASSERT(m.extmaps[0].id == 1);
+  ASSERT(m.extmaps[0].uri == "urn:ietf:params:rtp-hdrext:ssrc-audio-level");
 
-  // Check that rtcp-fb is in generic attributes
-  bool found_rtcp_fb = false;
-  for (auto& [name, value] : m.attributes) {
-    if (name == "rtcp-fb" && value == "96 nack") {
-      found_rtcp_fb = true;
-      break;
-    }
-  }
-  ASSERT(found_rtcp_fb);
+  ASSERT(m.rtcp_fbs.size() == 1);
+  ASSERT(m.rtcp_fbs[0].payload_type == 96);
+  ASSERT(m.rtcp_fbs[0].type == "nack");
+  ASSERT(m.rtcp_fbs[0].subtype.empty());
+
+  // msid-semantic parsed from session level
+  ASSERT(s.msid_semantic == "WMS");
+  ASSERT(s.msid_tokens.size() == 1);
+  ASSERT(s.msid_tokens[0] == "stream1");
 
   std::cout << "  parse video offer OK\n";
 }
@@ -755,6 +757,153 @@ static void test_unknown_attributes_preserved() {
   std::cout << "  unknown attributes preserved OK\n";
 }
 
+static void test_extmap_parse() {
+  std::string sdp =
+      "v=0\r\n"
+      "o=- 0 0 IN IP4 0.0.0.0\r\n"
+      "s=-\r\n"
+      "t=0 0\r\n"
+      "m=video 9 UDP/TLS/RTP/SAVPF 96\r\n"
+      "c=IN IP4 0.0.0.0\r\n"
+      "a=extmap:1 urn:ietf:params:rtp-hdrext:sdes:mid\r\n"
+      "a=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\n";
+
+  auto s = parse_sdp(sdp);
+  ASSERT(s.medias[0].extmaps.size() == 2);
+  ASSERT(s.medias[0].extmaps[0].id == 1);
+  ASSERT(s.medias[0].extmaps[0].uri ==
+         "urn:ietf:params:rtp-hdrext:sdes:mid");
+  ASSERT(s.medias[0].extmaps[1].id == 3);
+  ASSERT(s.medias[0].extmaps[1].uri ==
+         "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time");
+
+  auto str = s.to_string();
+  ASSERT(str.find("a=extmap:1 urn:ietf:params:rtp-hdrext:sdes:mid\r\n") !=
+         std::string::npos);
+  ASSERT(str.find("a=extmap:3 "
+                  "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time"
+                  "\r\n") != std::string::npos);
+
+  std::cout << "  extmap parse OK\n";
+}
+
+static void test_extmap_roundtrip() {
+  std::string original =
+      "v=0\r\n"
+      "o=- 0 0 IN IP4 0.0.0.0\r\n"
+      "s=-\r\n"
+      "t=0 0\r\n"
+      "m=video 9 UDP/TLS/RTP/SAVPF 96\r\n"
+      "c=IN IP4 0.0.0.0\r\n"
+      "a=extmap:1 urn:ietf:params:rtp-hdrext:sdes:mid\r\n"
+      "a=extmap:3/sendonly "
+      "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\n";
+
+  auto parsed = parse_sdp(original);
+  ASSERT(parsed.medias[0].extmaps.size() == 2);
+  ASSERT(parsed.medias[0].extmaps[0].id == 1);
+  ASSERT(parsed.medias[0].extmaps[1].id == 3);
+
+  auto serialized = parsed.to_string();
+  auto reparsed = parse_sdp(serialized);
+  ASSERT(reparsed.medias[0].extmaps.size() == 2);
+  ASSERT(reparsed.medias[0].extmaps[0].id == 1);
+  ASSERT(reparsed.medias[0].extmaps[0].uri ==
+         "urn:ietf:params:rtp-hdrext:sdes:mid");
+  ASSERT(reparsed.medias[0].extmaps[1].id == 3);
+
+  std::cout << "  extmap roundtrip OK\n";
+}
+
+static void test_rtcp_fb_parse() {
+  std::string sdp =
+      "v=0\r\n"
+      "o=- 0 0 IN IP4 0.0.0.0\r\n"
+      "s=-\r\n"
+      "t=0 0\r\n"
+      "m=video 9 UDP/TLS/RTP/SAVPF 96\r\n"
+      "c=IN IP4 0.0.0.0\r\n"
+      "a=rtcp-fb:96 nack\r\n"
+      "a=rtcp-fb:96 nack pli\r\n"
+      "a=rtcp-fb:96 goog-remb\r\n";
+
+  auto s = parse_sdp(sdp);
+  ASSERT(s.medias[0].rtcp_fbs.size() == 3);
+
+  ASSERT(s.medias[0].rtcp_fbs[0].payload_type == 96);
+  ASSERT(s.medias[0].rtcp_fbs[0].type == "nack");
+  ASSERT(s.medias[0].rtcp_fbs[0].subtype.empty());
+
+  ASSERT(s.medias[0].rtcp_fbs[1].payload_type == 96);
+  ASSERT(s.medias[0].rtcp_fbs[1].type == "nack");
+  ASSERT(s.medias[0].rtcp_fbs[1].subtype == "pli");
+
+  ASSERT(s.medias[0].rtcp_fbs[2].payload_type == 96);
+  ASSERT(s.medias[0].rtcp_fbs[2].type == "goog-remb");
+  ASSERT(s.medias[0].rtcp_fbs[2].subtype.empty());
+
+  auto str = s.to_string();
+  ASSERT(str.find("a=rtcp-fb:96 nack\r\n") != std::string::npos);
+  ASSERT(str.find("a=rtcp-fb:96 nack pli\r\n") != std::string::npos);
+  ASSERT(str.find("a=rtcp-fb:96 goog-remb\r\n") != std::string::npos);
+
+  std::cout << "  rtcp-fb parse OK\n";
+}
+
+static void test_rtcp_fb_roundtrip() {
+  std::string original =
+      "v=0\r\n"
+      "o=- 0 0 IN IP4 0.0.0.0\r\n"
+      "s=-\r\n"
+      "t=0 0\r\n"
+      "m=video 9 UDP/TLS/RTP/SAVPF 96 97\r\n"
+      "c=IN IP4 0.0.0.0\r\n"
+      "a=rtcp-fb:96 nack\r\n"
+      "a=rtcp-fb:96 nack pli\r\n"
+      "a=rtcp-fb:96 ccm fir\r\n"
+      "a=rtcp-fb:97 nack\r\n";
+
+  auto parsed = parse_sdp(original);
+  ASSERT(parsed.medias[0].rtcp_fbs.size() == 4);
+
+  auto serialized = parsed.to_string();
+  auto reparsed = parse_sdp(serialized);
+  ASSERT(reparsed.medias[0].rtcp_fbs.size() == 4);
+  ASSERT(reparsed.medias[0].rtcp_fbs[0].payload_type == 96);
+  ASSERT(reparsed.medias[0].rtcp_fbs[0].type == "nack");
+  ASSERT(reparsed.medias[0].rtcp_fbs[1].payload_type == 96);
+  ASSERT(reparsed.medias[0].rtcp_fbs[1].type == "nack");
+  ASSERT(reparsed.medias[0].rtcp_fbs[1].subtype == "pli");
+  ASSERT(reparsed.medias[0].rtcp_fbs[2].payload_type == 96);
+  ASSERT(reparsed.medias[0].rtcp_fbs[2].type == "ccm");
+  ASSERT(reparsed.medias[0].rtcp_fbs[2].subtype == "fir");
+  ASSERT(reparsed.medias[0].rtcp_fbs[3].payload_type == 97);
+  ASSERT(reparsed.medias[0].rtcp_fbs[3].type == "nack");
+
+  std::cout << "  rtcp-fb roundtrip OK\n";
+}
+
+static void test_msid_semantic_parse() {
+  std::string sdp =
+      "v=0\r\n"
+      "o=- 0 0 IN IP4 0.0.0.0\r\n"
+      "s=-\r\n"
+      "t=0 0\r\n"
+      "a=msid-semantic: WMS camera mic\r\n";
+
+  auto s = parse_sdp(sdp);
+  ASSERT(s.msid_semantic == "WMS");
+  ASSERT(s.msid_tokens.size() == 2);
+  ASSERT(s.msid_tokens[0] == "camera");
+  ASSERT(s.msid_tokens[1] == "mic");
+
+  auto str = s.to_string();
+  ASSERT(str.find("a=msid-semantic:WMS camera mic\r\n") !=
+         std::string::npos);
+
+  std::cout << "  msid-semantic parse OK\n";
+}
+
 int main() {
   std::cout << "SDP:\n";
   test_parse_trivial();
@@ -782,6 +931,13 @@ int main() {
   test_rtpmap_encoding_params();
   test_invalid_rtpmap_parse();
   test_unknown_attributes_preserved();
+
+  std::cout << "Extensions:\n";
+  test_extmap_parse();
+  test_extmap_roundtrip();
+  test_rtcp_fb_parse();
+  test_rtcp_fb_roundtrip();
+  test_msid_semantic_parse();
 
   std::cout << "All tests passed\n";
   return 0;

@@ -33,12 +33,12 @@ struct rtp_rtcp_parameters {
 struct rtp_send_parameters {
     std::optional<std::string> transaction_id;
     std::vector<rtp_encoding_parameters> encodings;
-    std::vector<std::string> header_extensions;
+    std::vector<sdp_extmap> header_extensions;
     rtp_rtcp_parameters rtcp;
 };
 
 struct rtp_receive_parameters {
-    std::vector<std::string> header_extensions;
+    std::vector<sdp_extmap> header_extensions;
     rtp_rtcp_parameters rtcp;
 };
 

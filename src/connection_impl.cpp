@@ -196,6 +196,15 @@ connection_impl::_sender_send_loop(std::weak_ptr<rtp_sender> weak_sender,
             if (std::get<0>(r))
                 co_return;
 
+            {
+                auto txr = sender->transceiver();
+                auto c = txr ? txr->connection() : nullptr;
+                if (c) {
+                    c->_tx_packets++;
+                    c->_tx_bytes += rtp_buf.size();
+                }
+            }
+
             sender->_octet_count +=
                 static_cast<uint32_t>(payloads[i].size());
             sender->_packet_count++;
@@ -378,6 +387,8 @@ asioice::task<void> connection_impl::do_connect() {
             keys->profile != asioice::ssl::srtp_protection_profile::none) {
             _srtp_transport =
                 std::make_shared<srtp_transport_type>(_ice_transport);
+            auto id = reinterpret_cast<uintptr_t>(_srtp_transport.get());
+            _transport_stats_id = "transport_" + std::to_string(id);
             auto srtp_role = we_are_active ? asioice::ssl::dtls_role::client
                                            : asioice::ssl::dtls_role::server;
             _srtp_transport->setup(*keys, srtp_role);
@@ -415,6 +426,8 @@ asioice::task<void> connection_impl::do_connect() {
             _srtp_transport->on_rtp_rtcp_packet(
                 [this, user_cb = std::move(user_rtp)](
                     asioice::io_buffer_ptr buf) mutable {
+                    _rx_packets++;
+                    _rx_bytes += buf->size();
                     auto pkt = rtp::rtp_packet::parse(buf->data(), buf->size());
                     if (pkt) {
                         // Track stream statistics for RTCP RR
@@ -523,6 +536,55 @@ asioice::task<void> connection_impl::do_connect() {
                                 st.lsr = cp.ntp_timestamp;
                                 st.lsr_time =
                                     std::chrono::steady_clock::now();
+
+                                auto &ro =
+                                    _remote_outbound_stats[cp.ssrc];
+                                ro.timestamp =
+                                    std::chrono::system_clock::now();
+                                ro.type = "remote-outbound-rtp";
+                                ro.ssrc = cp.ssrc;
+                                ro.packets_sent =
+                                    cp.sender_packet_count;
+                                ro.bytes_sent = cp.sender_octet_count;
+                                ro.remote_timestamp = cp.ntp_timestamp;
+                            } else if (cp.type == rtcp::packet_type::RR) {
+                                for (auto &b : cp.blocks) {
+                                    auto &ri =
+                                        _remote_inbound_stats[b.ssrc];
+                                    ri.timestamp =
+                                        std::chrono::system_clock::now();
+                                    ri.type = "remote-inbound-rtp";
+                                    ri.ssrc = b.ssrc;
+                                    ri.packets_lost = b.cumulative_lost;
+                                    ri.jitter = b.jitter;
+                                    ri.fraction_lost =
+                                        b.fraction_lost / 256.0;
+                                    if (b.lsr && b.dlsr) {
+                                        auto now =
+                                            std::chrono::steady_clock::
+                                                now();
+                                        auto it =
+                                            _stream_stats.find(b.ssrc);
+                                        if (it != _stream_stats.end() &&
+                                            it->second.lsr_time
+                                                    .time_since_epoch()
+                                                    .count() > 0) {
+                                            auto rtt_us =
+                                                std::chrono::duration_cast<
+                                                    std::chrono::
+                                                        microseconds>(
+                                                    now -
+                                                    it->second.lsr_time)
+                                                    .count() -
+                                                (static_cast<int64_t>(
+                                                     b.dlsr) *
+                                                 1000000 / 65536);
+                                            if (rtt_us > 0)
+                                                ri.round_trip_time =
+                                                    rtt_us / 1000000.0;
+                                        }
+                                    }
+                                }
                             } else if (cp.type == rtcp::packet_type::PSFB) {
                                 if (cp.report_count ==
                                         rtcp::packet_type::PSFB_PLI ||
@@ -1232,6 +1294,94 @@ asioice::task<bool> data_channel::open() {
         co_return false;
     _options = _channel->options();
     co_return true;
+}
+
+rtc_stats_report connection_impl::get_stats() const {
+    rtc_stats_report report;
+    auto now = std::chrono::system_clock::now();
+
+    // Transport stats
+    auto ts = std::make_shared<rtc_transport_stats>();
+    ts->timestamp = now;
+    ts->type = "transport";
+    ts->id = _transport_stats_id;
+    ts->packets_sent = _tx_packets;
+    ts->packets_received = _rx_packets;
+    ts->bytes_sent = _tx_bytes;
+    ts->bytes_received = _rx_bytes;
+    ts->ice_role = "unknown";
+    ts->dtls_state =
+        _srtp_transport ? "connected" : "new";
+    report[ts->id] = ts;
+
+    // Outbound stats per sender
+    for (auto &t : _transceivers) {
+        auto s = t->sender();
+        if (!s)
+            continue;
+        auto track = s->track();
+        if (!track)
+            continue;
+        auto os = std::make_shared<rtc_outbound_rtp_stream_stats>();
+        os->timestamp = now;
+        os->type = "outbound-rtp";
+        os->id = "outbound-rtp_" + t->mid();
+        os->ssrc = 0; // SSRC is in media_frame, not on sender
+        os->kind = track->kind() == media_kind::video ? "video" : "audio";
+        os->transport_id = _transport_stats_id;
+        os->packets_sent = s->_packet_count;
+        os->bytes_sent = s->_octet_count;
+        os->track_id = track->id();
+        report[os->id] = os;
+    }
+
+    // Inbound stats per SSRC
+    for (auto &[ssrc, st] : _stream_stats) {
+        auto is = std::make_shared<rtc_inbound_rtp_stream_stats>();
+        is->timestamp = now;
+        is->type = "inbound-rtp";
+        is->id = "inbound-rtp_" + std::to_string(ssrc);
+        is->ssrc = ssrc;
+        auto it = _ssrc_track_map.find(ssrc);
+        is->kind = (it != _ssrc_track_map.end() &&
+                    it->second->kind() == media_kind::video)
+                       ? "video"
+                       : "audio";
+        is->transport_id = _transport_stats_id;
+        is->packets_received = st.packets_received;
+        is->packets_lost = static_cast<int64_t>(st.packets_expected) -
+                           st.packets_received;
+        is->jitter = static_cast<uint32_t>(st.jitter_q4 >> 4);
+        report[is->id] = is;
+    }
+
+    // Remote outbound stats (from RTCP SR)
+    for (auto &[ssrc, ro] : _remote_outbound_stats) {
+        auto s = std::make_shared<rtc_remote_outbound_rtp_stream_stats>(ro);
+        s->kind = "audio";
+        auto it = _ssrc_track_map.find(ssrc);
+        if (it != _ssrc_track_map.end())
+            s->kind =
+                it->second->kind() == media_kind::video ? "video" : "audio";
+        s->transport_id = _transport_stats_id;
+        s->id = "remote-outbound-rtp_" + std::to_string(ssrc);
+        report[s->id] = s;
+    }
+
+    // Remote inbound stats (from RTCP RR)
+    for (auto &[ssrc, ri] : _remote_inbound_stats) {
+        auto s = std::make_shared<rtc_remote_inbound_rtp_stream_stats>(ri);
+        s->kind = "audio";
+        auto it = _ssrc_track_map.find(ssrc);
+        if (it != _ssrc_track_map.end())
+            s->kind =
+                it->second->kind() == media_kind::video ? "video" : "audio";
+        s->transport_id = _transport_stats_id;
+        s->id = "remote-inbound-rtp_" + std::to_string(ssrc);
+        report[s->id] = s;
+    }
+
+    return report;
 }
 
 } // namespace asiortc

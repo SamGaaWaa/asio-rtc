@@ -11,6 +11,7 @@
 #include "asioice/task.hpp"
 #include "asiortc/connection.hpp"
 #include "asiortc/media_track.hpp"
+#include "asiortc/rtc_stats.hpp"
 #include "data_channel.hpp"
 #include "rtp_transceiver.hpp"
 #include "sdp.hpp"
@@ -197,6 +198,8 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
 
     void register_encoder(std::string name, encoder_factory factory);
 
+    rtc_stats_report get_stats() const;
+
     auto sendto(net::const_buffer data, uint8_t component) {
         return _agent.sendto(data, component);
     }
@@ -242,6 +245,14 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
     std::unordered_map<uint32_t, std::shared_ptr<media_track_impl>>
         _ssrc_track_map{};
     std::unordered_map<uint32_t, _remote_stream_stats> _stream_stats{};
+
+    std::string _transport_stats_id{};
+    uint64_t _tx_packets = 0, _tx_bytes = 0;
+    uint64_t _rx_packets = 0, _rx_bytes = 0;
+    std::unordered_map<uint32_t, rtc_remote_outbound_rtp_stream_stats>
+        _remote_outbound_stats{};
+    std::unordered_map<uint32_t, rtc_remote_inbound_rtp_stream_stats>
+        _remote_inbound_stats{};
 
     std::optional<session_description> _local_desc{};
     std::optional<session_description> _remote_desc{};

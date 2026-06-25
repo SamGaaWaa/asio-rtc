@@ -230,6 +230,7 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
     stdexec::counting_scope _scope{};
 
     agent_type _agent;
+    bundle_policy_t _bundle_policy{bundle_policy_t::max_bundle};
     on_candidates_cb _on_candidates{};
     asioice::ssl::dtls_certificate _cert{};
     bool _roles_set = false;

@@ -81,7 +81,8 @@ static void test_parse_video_offer() {
   auto s = parse_sdp(sdp);
   ASSERT(s.version == 0);
   ASSERT(s.bundle_groups.size() == 1);
-  ASSERT(s.bundle_groups[0] == "0");
+  ASSERT(s.bundle_groups[0].size() == 1);
+  ASSERT(s.bundle_groups[0][0] == "0");
   ASSERT(s.medias.size() == 1);
 
   auto& m = s.medias[0];
@@ -207,10 +208,11 @@ static void test_parse_multiple_media() {
       "a=setup:actpass\r\n";
 
   auto s = parse_sdp(sdp);
-  ASSERT(s.bundle_groups.size() == 3);
-  ASSERT(s.bundle_groups[0] == "0");
-  ASSERT(s.bundle_groups[1] == "1");
-  ASSERT(s.bundle_groups[2] == "2");
+  ASSERT(s.bundle_groups.size() == 1);
+  ASSERT(s.bundle_groups[0].size() == 3);
+  ASSERT(s.bundle_groups[0][0] == "0");
+  ASSERT(s.bundle_groups[0][1] == "1");
+  ASSERT(s.bundle_groups[0][2] == "2");
 
   ASSERT(s.medias.size() == 3);
 
@@ -382,7 +384,7 @@ static void test_write_with_media() {
   s.session_name = "-";
   s.timing.start = 0;
   s.timing.stop = 0;
-  s.bundle_groups = {"0"};
+  s.bundle_groups = {{"0"}};
 
   sdp_media video;
   video.media_type = "video";
@@ -568,7 +570,10 @@ static void test_roundtrip_session_level_attrs() {
   ASSERT(parsed.ice_pwd == "sessLevelPwd");
   ASSERT(parsed.fingerprint == "sha-256 SESSION_FP");
   ASSERT(parsed.setup == "passive");
-  ASSERT(parsed.bundle_groups.size() == 2);
+  ASSERT(parsed.bundle_groups.size() == 1);
+  ASSERT(parsed.bundle_groups[0].size() == 2);
+  ASSERT(parsed.bundle_groups[0][0] == "0");
+  ASSERT(parsed.bundle_groups[0][1] == "1");
 
   auto serialized = parsed.to_string();
   auto reparsed = parse_sdp(serialized);
@@ -577,7 +582,8 @@ static void test_roundtrip_session_level_attrs() {
   ASSERT(reparsed.ice_pwd == "sessLevelPwd");
   ASSERT(reparsed.fingerprint == "sha-256 SESSION_FP");
   ASSERT(reparsed.setup == "passive");
-  ASSERT(reparsed.bundle_groups.size() == 2);
+  ASSERT(reparsed.bundle_groups.size() == 1);
+  ASSERT(reparsed.bundle_groups[0].size() == 2);
 
   std::cout << "  roundtrip session-level attrs OK\n";
 }

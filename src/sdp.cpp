@@ -178,8 +178,10 @@ void apply_session_attr(session_description &session, std::string_view name,
     if (name == "group") {
         auto parts = split_whitespace(value);
         if (!parts.empty() && parts[0] == "BUNDLE") {
+            std::vector<std::string> mids;
             for (std::size_t i = 1; i < parts.size(); ++i)
-                session.bundle_groups.emplace_back(parts[i]);
+                mids.emplace_back(parts[i]);
+            session.bundle_groups.push_back(std::move(mids));
         }
     } else if (name == "ice-ufrag") {
         session.ice_ufrag = vstr;
@@ -401,12 +403,14 @@ std::string session_description::to_string() const {
     }
 
     if (!sdp.bundle_groups.empty()) {
-        out += "a=group:BUNDLE";
-        for (const auto &g : sdp.bundle_groups) {
-            out += " ";
-            out += g;
+        for (const auto &grp : sdp.bundle_groups) {
+            out += "a=group:BUNDLE";
+            for (const auto &mid : grp) {
+                out += " ";
+                out += mid;
+            }
+            out += "\r\n";
         }
-        out += "\r\n";
     }
     if (!sdp.ice_ufrag.empty())
         out += "a=ice-ufrag:" + sdp.ice_ufrag + "\r\n";

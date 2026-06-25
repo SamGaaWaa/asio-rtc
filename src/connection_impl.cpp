@@ -249,6 +249,7 @@ static asioice::agent_config get_agent_config(asiortc::configuration &&cfg) {
 connection_impl::connection_impl(connection_impl::executor_type ex,
                                  asiortc::configuration cfg)
     : _executor{std::move(ex)},
+      _bundle_policy{cfg.bundle_policy},
       _agent{_executor, get_agent_config(std::move(cfg))} {
     _agent.on_local_candidates(
         std::bind_front(&connection_impl::do_on_candidates, this));
@@ -770,6 +771,20 @@ connection_impl::set_remote_description(session_description desc) {
     bool is_offer = (desc.type == "offer");
     _remote_desc = std::move(desc);
     if (is_offer) {
+        if (_remote_desc->bundle_groups.size() > 1)
+            throw std::logic_error{
+                "max-compat bundle policy not supported: "
+                "multiple BUNDLE groups would require multiple transports"};
+        if (!_remote_desc->bundle_groups.empty()) {
+            const auto &bundled = _remote_desc->bundle_groups[0];
+            for (const auto &rm : _remote_desc->medias)
+                if (rm.media_type != "application" &&
+                    std::find(bundled.begin(), bundled.end(), rm.mid) ==
+                        bundled.end())
+                    throw std::logic_error{
+                        "balanced/max-compat bundle policy not supported: "
+                        "media section mid=" + rm.mid + " not in BUNDLE group"};
+        }
         _signaling_state = signaling_state_t::have_remote_offer;
         for (const auto &rm : _remote_desc->medias) {
             if (rm.media_type == "application")
@@ -872,8 +887,11 @@ asioice::task<session_description> connection_impl::create_offer() {
         ++mid_counter;
     }
 
+    std::vector<std::string> mids;
     for (int i = 0; i < mid_counter; ++i)
-        offer.bundle_groups.push_back(std::to_string(i));
+        mids.push_back(std::to_string(i));
+    if (!mids.empty())
+        offer.bundle_groups.push_back(std::move(mids));
 
     if (_transceivers.size() > 0) {
         offer.msid_semantic = "WMS";
@@ -907,9 +925,6 @@ asioice::task<session_description> connection_impl::create_answer() {
     answer.session_name = "-";
     answer.timing.start = 0;
     answer.timing.stop = 0;
-    answer.bundle_groups = _remote_desc->bundle_groups.empty()
-                               ? std::vector<std::string>{"0"}
-                               : _remote_desc->bundle_groups;
     answer.ice_ufrag = _agent.local_username();
     answer.ice_pwd = _agent.local_password();
     answer.fingerprint = fp.hash_name() + " " + fp.value;
@@ -952,6 +967,12 @@ asioice::task<session_description> connection_impl::create_answer() {
         answer_media.conn_addr = "0.0.0.0";
         answer.medias.push_back(std::move(answer_media));
     }
+
+    std::vector<std::string> answer_bundle;
+    for (const auto &m : answer.medias)
+        answer_bundle.push_back(m.mid);
+    if (!answer_bundle.empty())
+        answer.bundle_groups.push_back(std::move(answer_bundle));
 
     if (ice_options_trickle_from(*_remote_desc))
         answer.attributes.emplace_back("ice-options", "trickle");

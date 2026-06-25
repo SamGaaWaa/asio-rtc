@@ -93,7 +93,7 @@ struct session_description {
     std::string setup;
     std::vector<std::string> candidates;
     std::string mid;
-    std::vector<std::string> bundle_groups;
+    std::vector<std::vector<std::string>> bundle_groups;
 
     std::string msid_semantic;
     std::vector<std::string> msid_tokens;

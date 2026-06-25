@@ -25,6 +25,8 @@ std::vector<sdp_codec> default_video_codecs() {
     return {
         {96, "VP8", 90000, "", ""},
         {97, "rtx", 90000, "", "apt=96"},
+        {98, "H264", 90000, "", ""},
+        {99, "rtx", 90000, "", "apt=98"},
     };
 }
 
@@ -98,11 +100,17 @@ sdp_media rtp_transceiver::to_offer_sdp_media() const {
             {1, "urn:ietf:params:rtp-hdrext:sdes:mid"},
             {3,
              "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time"}};
-        m.rtcp_fbs = {
-            {96, "nack", ""},
-            {96, "nack", "pli"},
-            {96, "goog-remb", ""},
-        };
+        for (const auto &c : _codecs) {
+            if (c.name != "rtx" && c.name != "red" &&
+                c.name != "ulpfec" && c.name != "flexfec") {
+                m.rtcp_fbs.push_back(
+                    {c.payload_type, "nack", ""});
+                m.rtcp_fbs.push_back(
+                    {c.payload_type, "nack", "pli"});
+                m.rtcp_fbs.push_back(
+                    {c.payload_type, "goog-remb", ""});
+            }
+        }
     } else if (media == "audio") {
         m.extmaps = {{1, "urn:ietf:params:rtp-hdrext:sdes:mid"}};
     }

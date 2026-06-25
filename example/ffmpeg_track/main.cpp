@@ -24,6 +24,7 @@ namespace websocket = beast::websocket;
 
 #include "codecs/vpx.hpp"
 #include "codecs/opus.hpp"
+#include "codecs/h264.hpp"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -404,6 +405,9 @@ static task<void> ffmpeg_session(net::io_context &ctx, ws_ptr ws) {
     conn->register_encoder("VP8", [](int bps) {
         return codecs::make_vp8_encoder(bps ? bps : 1000000);
     });
+    conn->register_encoder("H264", [](int bps) {
+        return codecs::make_h264_encoder(bps ? bps : 1000000);
+    });
     conn->register_encoder("opus", [](int bps) {
         (void)bps;
         return codecs::make_opus_encoder(64000);
@@ -478,8 +482,6 @@ static task<void> ffmpeg_session(net::io_context &ctx, ws_ptr ws) {
 
     co_await conn->set_remote_description(std::move(answer));
 
-    auto srtp = conn->srtp();
-
     conn->on_rtp_rtcp_packet([&](asioice::io_buffer_ptr buf) {
         auto pkt = rtp::rtp_packet::parse(buf->data(), buf->size());
         if (pkt)
@@ -489,13 +491,17 @@ static task<void> ffmpeg_session(net::io_context &ctx, ws_ptr ws) {
     });
 
     std::cout << "Waiting for ICE+DTLS+SRTP...\n";
-    for (int i = 0; i < 200 && !srtp; ++i) {
-        timer.expires_after(std::chrono::milliseconds(50));
-        co_await timer.async_wait(utils::use_sender);
-        srtp = conn->srtp();
-    }
-    if (!srtp) {
-        std::cerr << "SRTP setup timeout\n";
+    while (conn->connection_state() != connection_state_t::connected &&
+            conn->connection_state() != connection_state_t::failed)
+        co_await conn->on_connection_state_changed();
+    // for (int i = 0; i < 200 && !srtp; ++i) {
+    //     timer.expires_after(std::chrono::milliseconds(50));
+    //     co_await timer.async_wait(utils::use_sender);
+    //     srtp = conn->srtp();
+    // }
+    // auto srtp = conn->srtp();
+    if (conn->connection_state() != connection_state_t::connected) {
+        std::cerr << "Failed to connect\n";
         conn->close();
         co_return;
     }

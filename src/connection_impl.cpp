@@ -134,7 +134,7 @@ connection_impl::_sender_send_loop(std::weak_ptr<rtp_sender> weak_sender,
         sender->_force_keyframe = false;
 
         for (size_t i = 0; i < payloads.size(); ++i) {
-            // Build RTP header extension data (MID + abs-send-time)
+            // Build RTP header extension data
             std::vector<uint8_t> ext_data;
             if (sender->_encoder) {
                 auto tr = sender->transceiver();
@@ -145,17 +145,19 @@ connection_impl::_sender_send_loop(std::weak_ptr<rtp_sender> weak_sender,
                     ext_data.push_back(
                         static_cast<uint8_t>(mid.empty() ? '0' : mid[0]));
 
-                    // abs-send-time ext (ID=3, 3 bytes)
-                    uint64_t ntp = sender->_ntp_timestamp;
-                    uint32_t abs = static_cast<uint32_t>(
-                        ntp ? (ntp >> 14) & 0xFFFFFF : 0);
-                    ext_data.push_back(0x32);
-                    ext_data.push_back(
-                        static_cast<uint8_t>((abs >> 16) & 0xFF));
-                    ext_data.push_back(
-                        static_cast<uint8_t>((abs >> 8) & 0xFF));
-                    ext_data.push_back(
-                        static_cast<uint8_t>(abs & 0xFF));
+                    // abs-send-time ext (ID=3, 3 bytes) — video only
+                    if (frame->kind == media_kind::video) {
+                        uint64_t ntp = sender->_ntp_timestamp;
+                        uint32_t abs = static_cast<uint32_t>(
+                            ntp ? (ntp >> 14) & 0xFFFFFF : 0);
+                        ext_data.push_back(0x32);
+                        ext_data.push_back(
+                            static_cast<uint8_t>((abs >> 16) & 0xFF));
+                        ext_data.push_back(
+                            static_cast<uint8_t>((abs >> 8) & 0xFF));
+                        ext_data.push_back(
+                            static_cast<uint8_t>(abs & 0xFF));
+                    }
 
                     while (ext_data.size() % 4)
                         ext_data.push_back(0);
@@ -212,7 +214,7 @@ connection_impl::_sender_send_loop(std::weak_ptr<rtp_sender> weak_sender,
                         rtp_buf.begin() + ext_payload_off,
                         rtp_buf.end()),
                     .seq = seq,
-                    .timestamp = ts ? ts : frame->timestamp};
+                     .timestamp = ts ? ts : frame->timestamp};
         }
         continue;
     }
@@ -794,6 +796,9 @@ asioice::task<session_description> connection_impl::create_offer() {
     }
 
     for (auto &t : _transceivers) {
+        auto sender = t->sender();
+        if (!sender || !sender->track())
+            continue;
         if (t->mid().empty())
             t->set_mid(std::to_string(mid_counter));
         auto media = t->to_offer_sdp_media();
@@ -808,24 +813,9 @@ asioice::task<session_description> connection_impl::create_offer() {
     for (int i = 0; i < mid_counter; ++i)
         offer.bundle_groups.push_back(std::to_string(i));
 
-    {
-        std::vector<std::string> streams;
-        for (auto &t : _transceivers) {
-            auto msids = t->sender() ? t->sender()->msids()
-                                     : std::vector<std::string>{};
-            for (auto &ms : msids) {
-                auto dash = ms.find('-');
-                if (dash != std::string::npos)
-                    ms.resize(dash);
-                if (std::find(streams.begin(), streams.end(), ms) ==
-                    streams.end())
-                    streams.push_back(std::move(ms));
-            }
-        }
-        if (!streams.empty()) {
-            offer.msid_semantic = "WMS";
-            offer.msid_tokens = std::move(streams);
-        }
+    if (_transceivers.size() > 0) {
+        offer.msid_semantic = "WMS";
+        offer.msid_tokens = {"*"};
     }
 
     offer.attributes.emplace_back("ice-options", "trickle");

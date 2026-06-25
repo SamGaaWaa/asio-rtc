@@ -92,7 +92,7 @@ struct rtp_sender : std::enable_shared_from_this<rtp_sender> {
     std::optional<any_sender<void>> _send_rtcp_loop{};
     std::vector<std::string> _msids{};
     std::shared_ptr<codecs::encoder> _encoder{};
-    bool _force_keyframe = false;
+    bool _force_keyframe = true;
 
     uint32_t _packet_count = 0;
     uint32_t _octet_count = 0;

@@ -9,8 +9,6 @@ uint32_t jitter_buffer::_extend_seq(uint16_t seq, uint32_t last_extended) {
     uint32_t extended = (last_extended & 0xFFFF0000) | seq;
     if (extended + 0x8000 < last_extended)
         extended += 0x10000;
-    else if (extended - 0x8000 > last_extended)
-        extended -= 0x10000;
     return extended;
 }
 

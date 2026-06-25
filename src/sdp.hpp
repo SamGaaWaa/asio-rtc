@@ -15,6 +15,7 @@ struct sdp_codec {
     std::string name;
     uint32_t clock_rate;
     std::string encoding_params;
+    std::string fmtp_params;
 };
 
 struct sdp_extmap {

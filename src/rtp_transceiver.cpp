@@ -23,15 +23,15 @@ static sdp_direction negotiate_direction(sdp_direction local,
 
 std::vector<sdp_codec> default_video_codecs() {
     return {
-        {96, "VP8", 90000, ""},
-        {97, "rtx", 90000, "apt=96"},
+        {96, "VP8", 90000, "", ""},
+        {97, "rtx", 90000, "", "apt=96"},
     };
 }
 
 std::vector<sdp_codec> default_audio_codecs() {
     return {
-        {111, "opus", 48000, "2"},
-        {63, "telephone-event", 8000, ""},
+        {111, "opus", 48000, "2", ""},
+        {63, "telephone-event", 8000, "", ""},
     };
 }
 
@@ -79,25 +79,33 @@ sdp_media rtp_transceiver::to_offer_sdp_media() const {
     m.conn_addr = "0.0.0.0";
     m.direction = _direction;
     m.rtcp_mux = true;
-    m.msids = _sender->_msids;
+    m.msids.clear();
+    for (const auto &ms : _sender->_msids)
+        m.msids.push_back(ms + " " + _mid);
 
     for (const auto &c : _codecs) {
         m.payload_types.push_back(c.payload_type);
         m.rtpmaps.push_back(c);
-        if (!c.encoding_params.empty())
+        if (!c.fmtp_params.empty())
             m.fmtps.push_back(std::to_string(c.payload_type) +
-                              " " + c.encoding_params);
+                              " " + c.fmtp_params);
     }
 
     // Default RTP header extensions per media kind
     std::string media = infer_media_type(_codecs);
-    if (media == "video")
+    if (media == "video") {
         m.extmaps = {
             {1, "urn:ietf:params:rtp-hdrext:sdes:mid"},
             {3,
              "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time"}};
-    else if (media == "audio")
+        m.rtcp_fbs = {
+            {96, "nack", ""},
+            {96, "nack", "pli"},
+            {96, "goog-remb", ""},
+        };
+    } else if (media == "audio") {
         m.extmaps = {{1, "urn:ietf:params:rtp-hdrext:sdes:mid"}};
+    }
 
     return m;
 }

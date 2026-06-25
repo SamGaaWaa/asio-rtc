@@ -34,6 +34,8 @@ std::vector<sdp_codec> default_audio_codecs() {
     return {
         {111, "opus", 48000, "2", ""},
         {63, "telephone-event", 8000, "", ""},
+        {0, "PCMU", 8000, "1", ""},
+        {8, "PCMA", 8000, "1", ""},
     };
 }
 

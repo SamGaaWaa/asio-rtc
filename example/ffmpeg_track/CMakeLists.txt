@@ -5,6 +5,7 @@ add_executable(ffmpeg_track_example
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src/codecs/vpx.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src/codecs/opus.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src/codecs/h264.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/codecs/g711.cpp
 )
 target_include_directories(ffmpeg_track_example PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/asio-ice/third_party

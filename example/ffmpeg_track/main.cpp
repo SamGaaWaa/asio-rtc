@@ -25,6 +25,7 @@ namespace websocket = beast::websocket;
 #include "codecs/vpx.hpp"
 #include "codecs/opus.hpp"
 #include "codecs/h264.hpp"
+#include "codecs/vp9.hpp"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -405,6 +406,9 @@ static task<void> ffmpeg_session(net::io_context &ctx, ws_ptr ws) {
     });
     conn->register_encoder("H264", [](int bps) {
         return codecs::make_h264_encoder(bps ? bps : 1000000);
+    });
+    conn->register_encoder("VP9", [](int bps) {
+        return codecs::make_vp9_encoder(bps ? bps : 1000000);
     });
     conn->register_encoder("opus", [](int bps) {
         (void)bps;

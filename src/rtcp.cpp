@@ -452,4 +452,87 @@ std::vector<uint16_t> parse_nack(const uint8_t *data, size_t len) {
     return lost;
 }
 
+std::optional<transport_cc_feedback>
+parse_transport_cc(const uint8_t *data, size_t len) {
+    if (len < 8)
+        return std::nullopt;
+    transport_cc_feedback fb;
+    fb.base_seq = asioice::binary::ntoh<uint16_t>(
+        *reinterpret_cast<const uint16_t *>(data));
+    fb.status_count = asioice::binary::ntoh<uint16_t>(
+        *reinterpret_cast<const uint16_t *>(data + 2));
+    fb.reference_time = (static_cast<uint32_t>(data[4]) << 16) |
+                        (static_cast<uint32_t>(data[5]) << 8) |
+                        static_cast<uint32_t>(data[6]);
+    fb.feedback_packet_count = data[7];
+    if (len > 8)
+        fb.packet_chunks.assign(data + 8, data + len);
+    return fb;
+}
+
+std::vector<uint8_t>
+build_transport_cc(const transport_cc_feedback &fb) {
+    size_t fci_size = 8 + fb.packet_chunks.size();
+    std::vector<uint8_t> fci(fci_size);
+    asioice::binary::write_big<uint16_t>(fci.data(), fb.base_seq);
+    asioice::binary::write_big<uint16_t>(fci.data() + 2, fb.status_count);
+    fci[4] = static_cast<uint8_t>((fb.reference_time >> 16) & 0xFF);
+    fci[5] = static_cast<uint8_t>((fb.reference_time >> 8) & 0xFF);
+    fci[6] = static_cast<uint8_t>(fb.reference_time & 0xFF);
+    fci[7] = fb.feedback_packet_count;
+    if (!fb.packet_chunks.empty())
+        std::memcpy(fci.data() + 8, fb.packet_chunks.data(),
+                    fb.packet_chunks.size());
+
+    size_t total = 8 + 4 + fci.size();
+    std::vector<uint8_t> pkt(total);
+    pkt[0] = (2 << 6) | packet_type::RTPFB_TCC;
+    pkt[1] = packet_type::RTPFB;
+    asioice::binary::write_big<uint16_t>(pkt.data() + 2,
+                                         static_cast<uint16_t>(total / 4 - 1));
+    asioice::binary::write_big<uint32_t>(pkt.data() + 4, fb.sender_ssrc);
+    asioice::binary::write_big<uint32_t>(pkt.data() + 8, fb.media_ssrc);
+    std::memcpy(pkt.data() + 12, fci.data(), fci.size());
+    return pkt;
+}
+
+std::vector<tcc_packet_info>
+tcc_parse_packet_status(const transport_cc_feedback &) {
+    // Full chunk parsing deferred to GCC implementation
+    return {};
+}
+
+std::vector<uint8_t>
+tcc_build_packet_status(const std::vector<tcc_packet_info> &packets) {
+    std::vector<uint8_t> chunks;
+    chunks.reserve((packets.size() / 7 + 1) * 2 +
+                   packets.size());
+    std::vector<uint8_t> deltas;
+    for (size_t i = 0; i < packets.size();) {
+        uint16_t chunk = 0;
+        int bits = 12;
+        for (int j = 0; j < 7 && i < packets.size(); ++j, ++i) {
+            uint8_t sym = 0;
+            if (packets[i].status == tcc_packet_status::small_delta) {
+                sym = 1;
+                deltas.push_back(
+                    static_cast<uint8_t>(packets[i].delta & 0xFF));
+            } else if (packets[i].status ==
+                       tcc_packet_status::large_delta) {
+                sym = 2;
+                uint16_t d = static_cast<uint16_t>(packets[i].delta);
+                deltas.push_back(static_cast<uint8_t>((d >> 8) & 0xFF));
+                deltas.push_back(static_cast<uint8_t>(d & 0xFF));
+            }
+            chunk |= (sym << bits);
+            bits -= 2;
+        }
+        size_t off = chunks.size();
+        chunks.resize(off + 2);
+        asioice::binary::write_big<uint16_t>(chunks.data() + off, chunk);
+    }
+    chunks.insert(chunks.end(), deltas.begin(), deltas.end());
+    return chunks;
+}
+
 } // namespace asiortc::rtcp

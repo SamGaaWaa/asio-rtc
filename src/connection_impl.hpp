@@ -29,7 +29,9 @@ namespace net = asio;
 }
 #endif
 
+#include <array>
 #include <boost/compat/move_only_function.hpp>
+#include <chrono>
 #include <functional>
 #include <optional>
 #include <unordered_map>
@@ -254,6 +256,22 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
         _remote_outbound_stats{};
     std::unordered_map<uint32_t, rtc_remote_inbound_rtp_stream_stats>
         _remote_inbound_stats{};
+
+    uint16_t _transport_wide_seq = 1;
+    static constexpr size_t TWCC_SENT_SIZE = 256;
+    struct _twcc_sent_entry {
+        uint16_t transport_seq;
+        uint32_t ssrc;
+        size_t size;
+        std::chrono::steady_clock::time_point send_time;
+    };
+    std::array<std::optional<_twcc_sent_entry>, TWCC_SENT_SIZE> _twcc_sent{};
+    static constexpr size_t TWCC_RECV_SIZE = 1024;
+    struct _twcc_recv_entry {
+        uint16_t transport_seq;
+        std::chrono::steady_clock::time_point recv_time;
+    };
+    std::vector<_twcc_recv_entry> _twcc_recv;
 
     std::optional<session_description> _local_desc{};
     std::optional<session_description> _remote_desc{};

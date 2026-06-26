@@ -101,7 +101,9 @@ sdp_media rtp_transceiver::to_offer_sdp_media() const {
         m.extmaps = {
             {1, "urn:ietf:params:rtp-hdrext:sdes:mid"},
             {3,
-             "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time"}};
+             "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time"},
+            {4,
+             "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01"}};
         for (const auto &c : _codecs) {
             if (c.name != "rtx" && c.name != "red" &&
                 c.name != "ulpfec" && c.name != "flexfec") {
@@ -114,7 +116,10 @@ sdp_media rtp_transceiver::to_offer_sdp_media() const {
             }
         }
     } else if (media == "audio") {
-        m.extmaps = {{1, "urn:ietf:params:rtp-hdrext:sdes:mid"}};
+        m.extmaps = {
+            {1, "urn:ietf:params:rtp-hdrext:sdes:mid"},
+            {4,
+             "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01"}};
     }
 
     return m;

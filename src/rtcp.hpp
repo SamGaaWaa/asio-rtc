@@ -17,6 +17,7 @@ struct packet_type {
     static constexpr uint8_t PSFB  = 206;
 
     static constexpr uint8_t RTPFB_NACK = 1;
+    static constexpr uint8_t RTPFB_TCC  = 15;
     static constexpr uint8_t PSFB_PLI   = 1;
     static constexpr uint8_t PSFB_FIR   = 4;
     static constexpr uint8_t PSFB_APP   = 15;
@@ -97,5 +98,38 @@ std::vector<uint16_t> parse_nack(const uint8_t *data, size_t len);
 
 std::vector<rtcp_packet> parse_compound(const void *data,
                                         std::size_t len) noexcept;
+
+struct transport_cc_feedback {
+    uint32_t sender_ssrc = 0;
+    uint32_t media_ssrc = 0;
+    uint16_t base_seq = 0;
+    uint16_t status_count = 0;
+    uint32_t reference_time = 0;
+    uint8_t feedback_packet_count = 0;
+    std::vector<uint8_t> packet_chunks;
+};
+
+std::optional<transport_cc_feedback>
+parse_transport_cc(const uint8_t *data, size_t len);
+
+std::vector<uint8_t>
+build_transport_cc(const transport_cc_feedback &fb);
+
+enum class tcc_packet_status : uint8_t {
+    not_received = 0,
+    small_delta = 1,
+    large_delta = 2,
+};
+
+struct tcc_packet_info {
+    tcc_packet_status status;
+    int16_t delta = 0;
+};
+
+std::vector<tcc_packet_info>
+tcc_parse_packet_status(const transport_cc_feedback &fb);
+
+std::vector<uint8_t>
+tcc_build_packet_status(const std::vector<tcc_packet_info> &packets);
 
 } // namespace asiortc::rtcp

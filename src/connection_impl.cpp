@@ -134,6 +134,7 @@ connection_impl::_sender_send_loop(std::weak_ptr<rtp_sender> weak_sender,
         sender->_force_keyframe = false;
 
         for (size_t i = 0; i < payloads.size(); ++i) {
+            uint16_t twcc_seq = 0;
             // Build RTP header extension data
             std::vector<uint8_t> ext_data;
             if (sender->_encoder) {
@@ -157,6 +158,19 @@ connection_impl::_sender_send_loop(std::weak_ptr<rtp_sender> weak_sender,
                             static_cast<uint8_t>((abs >> 8) & 0xFF));
                         ext_data.push_back(
                             static_cast<uint8_t>(abs & 0xFF));
+                    }
+
+                    // transport-cc ext (ID=4, 2 bytes)
+                    {
+                        auto c = tr->connection();
+                        if (c) {
+                            twcc_seq = ++c->_transport_wide_seq;
+                            ext_data.push_back(0x41);
+                            ext_data.push_back(
+                                static_cast<uint8_t>((twcc_seq >> 8) & 0xFF));
+                            ext_data.push_back(
+                                static_cast<uint8_t>(twcc_seq & 0xFF));
+                        }
                     }
 
                     while (ext_data.size() % 4)
@@ -202,6 +216,16 @@ connection_impl::_sender_send_loop(std::weak_ptr<rtp_sender> weak_sender,
                 if (c) {
                     c->_tx_packets++;
                     c->_tx_bytes += rtp_buf.size();
+                    if (twcc_seq) {
+                        c->_twcc_sent[twcc_seq %
+                                       connection_impl::TWCC_SENT_SIZE] =
+                            connection_impl::_twcc_sent_entry{
+                                .transport_seq = twcc_seq,
+                                .ssrc = frame->ssrc,
+                                .size = rtp_buf.size(),
+                                .send_time =
+                                    std::chrono::steady_clock::now()};
+                    }
                 }
             }
 
@@ -431,6 +455,28 @@ asioice::task<void> connection_impl::do_connect() {
                     _rx_bytes += buf->size();
                     auto pkt = rtp::rtp_packet::parse(buf->data(), buf->size());
                     if (pkt) {
+                        // Extract transport-cc seq for outgoing TCC feedback
+                        if (!pkt->extension_data.empty()) {
+                            auto ext = pkt->extension_data;
+                            size_t off = 0;
+                            while (off + 1 <= ext.size()) {
+                                uint8_t hdr = ext[off];
+                                if (hdr == 0) { off++; continue; }
+                                uint8_t id = (hdr >> 4) & 0xF;
+                                uint8_t len = (hdr & 0xF) + 1;
+                                if (id == 4 && off + 1 + len <= ext.size()) {
+                                    uint16_t tcc_seq =
+                                        (static_cast<uint16_t>(ext[off + 1]) << 8) |
+                                        static_cast<uint16_t>(ext[off + 2]);
+                                    _twcc_recv.push_back({
+                                        .transport_seq = tcc_seq,
+                                        .recv_time = std::chrono::steady_clock::now()});
+                                    break;
+                                }
+                                off += 1 + len;
+                            }
+                        }
+
                         // Track stream statistics for RTCP RR
                         auto &st = _stream_stats[pkt->ssrc];
                         st.ssrc = pkt->ssrc;
@@ -669,6 +715,15 @@ asioice::task<void> connection_impl::do_connect() {
                                         }
                                     }
                                 }
+                            } else if (cp.type ==
+                                           rtcp::packet_type::RTPFB &&
+                                       cp.report_count ==
+                                           rtcp::packet_type::RTPFB_TCC) {
+                                auto fb = rtcp::parse_transport_cc(
+                                    cp.payload.data(),
+                                    cp.payload.size());
+                                // Store for future GCC consumption
+                                (void)fb;
                             }
                         }
                     }

@@ -126,7 +126,7 @@ class Vp8EncoderImpl : public encoder {
     Vp8EncoderImpl(int bitrate)
         : _bitrate(bitrate) {
 
-        std::random_device rd;
+        static thread_local std::random_device rd;
         std::mt19937 gen(rd());
         _picture_id = gen() & 0x7FFF;
     }

@@ -162,8 +162,8 @@ class G711DecoderImpl final : public decoder {
         std::vector<media_frame> frames;
         media_frame mf;
         mf.kind = media_kind::audio;
+        mf.format = media_format::pcm_s16le;
         mf.timestamp = timestamp;
-        mf.payload_type = 0;
         mf.data.resize(rtp_payload.size() * 2);
         auto *s16 = reinterpret_cast<int16_t *>(mf.data.data());
         for (size_t i = 0; i < rtp_payload.size(); ++i)

@@ -45,7 +45,7 @@ struct rtp_receive_parameters {
 struct rtp_transceiver;
 
 struct rtp_sender : std::enable_shared_from_this<rtp_sender> {
-    rtp_sender() noexcept = default;
+    rtp_sender();
 
     const std::string &mid() const noexcept { return _mid; }
 
@@ -102,6 +102,8 @@ struct rtp_sender : std::enable_shared_from_this<rtp_sender> {
     uint16_t _seq_base = 0;
     uint64_t _ntp_base = 0;
 
+    uint32_t _ssrc = 0;
+    uint8_t _pt = 0;
     uint32_t _rtx_ssrc = 0;
     uint8_t _rtx_pt = 97;
     uint16_t _rtx_seq = 0;

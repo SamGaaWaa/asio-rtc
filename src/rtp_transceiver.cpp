@@ -54,6 +54,13 @@ static std::string infer_media_type(const std::vector<sdp_codec> &codecs) {
     return "application";
 }
 
+rtp_sender::rtp_sender() {
+    static thread_local std::random_device rd;
+    static thread_local std::mt19937 gen(rd());
+    std::uniform_int_distribution<uint32_t> dist(0, 0xFFFFFFFF);
+    _ssrc = dist(gen);
+}
+
 void rtp_transceiver::wire_back_references() {
     auto self = weak_from_this();
     _sender->_transceiver = self;

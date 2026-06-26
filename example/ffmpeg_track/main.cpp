@@ -206,9 +206,8 @@ namespace {
                 if (ret == 0) {
                     media_frame mf;
                     mf.kind = media_kind::video;
-                    mf.ssrc = 0xDEADBEEF;
+                    mf.format = media_format::yuv420p;
                     mf.timestamp = _vpts;
-                    mf.payload_type = 96;
                     mf.width = frame->width;
                     mf.height = frame->height;
 
@@ -350,9 +349,8 @@ namespace {
 
         media_frame mf;
         mf.kind = media_kind::audio;
-        mf.ssrc = 0xBEEF;
+        mf.format = media_format::pcm_s16le;
         mf.timestamp = _apts;
-        mf.payload_type = 111;
         
         mf.data.assign(_src->_apcm.begin(), _src->_apcm.begin() + kFrameBytes);
         _src->_apcm.erase(_src->_apcm.begin(), _src->_apcm.begin() + kFrameBytes);
@@ -398,7 +396,7 @@ static task<void> ffmpeg_session(net::io_context &ctx, ws_ptr ws) {
 
     auto conn = std::make_shared<connection_impl>(ctx.get_executor(), configuration{
         .ice_servers{
-            .urls = {"stun:14.29.112.241:20002"}
+            .urls = {"stun:14.29.112.241:20002", "stun:stun.l.google.com:19302"}
         }
     });
 
@@ -457,7 +455,7 @@ static task<void> ffmpeg_session(net::io_context &ctx, ws_ptr ws) {
 
     {
         for (int i = 0;
-             i < 10 && conn->ice_gathering_state() !=
+             i < 20 && conn->ice_gathering_state() !=
                           ice_gathering_state_t::complete;
              ++i) {
             timer.expires_after(std::chrono::seconds(1));

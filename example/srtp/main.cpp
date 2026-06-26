@@ -92,10 +92,7 @@ struct sending_video_track : public media_track {
 
         media_frame frame;
         frame.kind = media_kind::video;
-        frame.ssrc = 0xDEADBEEF;
         frame.timestamp = _ts;
-        frame.payload_type = 97;
-        frame.marker = true;
 
         static const uint8_t vp8_keyframe[] = {
             0xd0, 0x42, 0x00, 0x9d, 0x01, 0x2a, 0x80, 0x02, 0xe0, 0x01, 0x02,

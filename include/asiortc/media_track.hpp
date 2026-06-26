@@ -12,14 +12,29 @@ namespace asiortc {
 
 enum class media_kind : uint8_t { audio = 0, video = 1 };
 
+enum class media_format : uint16_t {
+    unknown = 0,
+    yuv420p = 1,
+    nv12 = 2,
+    bgra = 3,
+    pcm_s16le = 100,
+    pcm_f32le = 101,
+    opus = 200,
+    vp8 = 201,
+    h264 = 202,
+};
+
+inline bool is_encoded_format(media_format fmt) noexcept {
+    using enum media_format;
+    return fmt == opus || fmt == vp8 || fmt == h264;
+}
+
 enum class track_state : uint8_t { live = 0, ended = 1 };
 
 struct media_frame {
     media_kind kind{};
-    uint32_t ssrc = 0;
+    media_format format = media_format::unknown;
     uint32_t timestamp = 0;
-    uint8_t payload_type = 0;
-    bool marker = false;
     int width = 0;
     int height = 0;
     uint16_t sequence_number = 0;

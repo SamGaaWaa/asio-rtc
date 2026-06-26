@@ -8,6 +8,7 @@ extern "C" {
 
 #include <cstring>
 #include <random>
+#include <stdexcept>
 
 #include "asiortc/media_track.hpp"
 #include "base.hpp"
@@ -78,52 +79,48 @@ class H264EncoderImpl : public encoder {
             _init_context();
         }
 
-        AVFrame *f = av_frame_alloc();
+        std::unique_ptr<AVFrame, void(*)(AVFrame*)> f(
+            av_frame_alloc(), +[](AVFrame *f) { av_frame_free(&f); });
+        if (!f)
+            throw std::runtime_error{"av_frame_alloc failed"};
         f->format = _ctx->pix_fmt;
         f->width = _ctx->width;
         f->height = _ctx->height;
-        av_frame_get_buffer(f, 0);
 
-        if (frame.data.size() >=
-            static_cast<size_t>(f->width * f->height * 3 / 2)) {
-            int y_size = f->width * f->height;
-            std::memcpy(f->data[0], frame.data.data(), y_size);
-            std::memcpy(f->data[1], frame.data.data() + y_size,
-                        y_size / 4);
-            std::memcpy(f->data[2],
-                        frame.data.data() + y_size + y_size / 4,
-                        y_size / 4);
-        }
+        if (av_image_fill_arrays(f->data, f->linesize,
+                                  frame.data.data(),
+                                  static_cast<AVPixelFormat>(f->format),
+                                  f->width, f->height, 1) < 0)
+            throw std::runtime_error{"av_image_fill_arrays failed"};
+
         f->pts = frame.timestamp;
 
         if (force_keyframe)
             f->pict_type = AV_PICTURE_TYPE_I;
 
-        int ret = avcodec_send_frame(_ctx, f);
-        av_frame_free(&f);
+        int ret = avcodec_send_frame(_ctx, f.get());
+        f.reset();
         if (ret < 0)
             return {{}, 0};
 
-        AVPacket *pkt = av_packet_alloc();
+        std::unique_ptr<AVPacket, void(*)(AVPacket*)> pkt(
+            av_packet_alloc(), +[](AVPacket *p) { av_packet_free(&p); });
         std::vector<uint8_t> encoded;
         while (true) {
-            ret = avcodec_receive_packet(_ctx, pkt);
+            ret = avcodec_receive_packet(_ctx, pkt.get());
             if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
                 break;
             if (ret < 0)
                 break;
             encoded.insert(encoded.end(), pkt->data,
                            pkt->data + pkt->size);
-            av_packet_unref(pkt);
+            av_packet_unref(pkt.get());
         }
-
-        uint32_t rtp_ts =
-            to_rtp_timestamp(pkt->pts, _ctx->time_base);
-        av_packet_free(&pkt);
-
         if (encoded.empty())
             return {{}, 0};
 
+        uint32_t rtp_ts =
+            to_rtp_timestamp(pkt->pts, _ctx->time_base);
         auto payloads = _packetize(encoded);
         return {std::move(payloads), rtp_ts};
     }
@@ -229,13 +226,11 @@ class H264DecoderImpl : public decoder {
         if (rtp_payload.empty())
             return {};
 
-        // Reconstruct annexB from RTP payload
         std::vector<uint8_t> nal;
         uint8_t first_byte = rtp_payload[0];
         uint8_t nalu_type = first_byte & 0x1F;
 
         if (nalu_type == 28) {
-            // FU-A: reconstruct from fragments
             if (rtp_payload.size() < 2)
                 return {};
             uint8_t fu_header = rtp_payload[1];
@@ -258,24 +253,24 @@ class H264DecoderImpl : public decoder {
             nal = rtp_payload;
         }
 
-        // Prepend annexB start code
         std::vector<uint8_t> annexb = {0x00, 0x00, 0x00, 0x01};
         annexb.insert(annexb.end(), nal.begin(), nal.end());
 
-        AVPacket *pkt = av_packet_alloc();
+        std::unique_ptr<AVPacket, void(*)(AVPacket*)> pkt(
+            av_packet_alloc(), +[](AVPacket *p) { av_packet_free(&p); });
         pkt->data = annexb.data();
         pkt->size = static_cast<int>(annexb.size());
         pkt->pts = timestamp;
 
-        int ret = avcodec_send_packet(_ctx, pkt);
-        av_packet_free(&pkt);
+        int ret = avcodec_send_packet(_ctx, pkt.get());
         if (ret < 0)
             return {};
 
         std::vector<media_frame> frames;
-        AVFrame *f = av_frame_alloc();
+        std::unique_ptr<AVFrame, void(*)(AVFrame*)> f(
+            av_frame_alloc(), +[](AVFrame *f) { av_frame_free(&f); });
         while (true) {
-            ret = avcodec_receive_frame(_ctx, f);
+            ret = avcodec_receive_frame(_ctx, f.get());
             if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
                 break;
             if (ret < 0)
@@ -283,22 +278,24 @@ class H264DecoderImpl : public decoder {
 
             media_frame mf;
             mf.kind = media_kind::video;
+            mf.format = media_format::yuv420p;
             mf.timestamp = static_cast<uint32_t>(
                 f->pts != AV_NOPTS_VALUE ? f->pts : 0);
-            mf.payload_type = 0;
+            mf.width = f->width;
+            mf.height = f->height;
 
-            int y_size = f->width * f->height;
-            mf.data.resize(y_size + y_size / 2);
-            std::memcpy(mf.data.data(), f->data[0], y_size);
-            std::memcpy(mf.data.data() + y_size, f->data[1],
-                        y_size / 4);
-            std::memcpy(mf.data.data() + y_size + y_size / 4,
-                        f->data[2], y_size / 4);
+            int buf_size = av_image_get_buffer_size(
+                static_cast<AVPixelFormat>(f->format), f->width,
+                f->height, 1);
+            mf.data.resize(buf_size);
+            av_image_copy_to_buffer(mf.data.data(), buf_size,
+                                    f->data, f->linesize,
+                                    static_cast<AVPixelFormat>(f->format),
+                                    f->width, f->height, 1);
 
             frames.push_back(std::move(mf));
-            av_frame_unref(f);
+            av_frame_unref(f.get());
         }
-        av_frame_free(&f);
         return frames;
     }
 

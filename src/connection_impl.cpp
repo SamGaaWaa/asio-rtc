@@ -123,6 +123,7 @@ connection_impl::_sender_send_loop(std::weak_ptr<rtp_sender> weak_sender,
                 auto it = conn->_codec_registry.find(c.name);
                 if (it != conn->_codec_registry.end()) {
                     sender->_encoder = it->second(1000000);
+                    sender->_pt = c.payload_type;
                     break;
                 }
             }
@@ -130,7 +131,10 @@ connection_impl::_sender_send_loop(std::weak_ptr<rtp_sender> weak_sender,
                 co_return;
         }
         auto [payloads, ts] =
-            sender->_encoder->encode(*frame, sender->_force_keyframe);
+            is_encoded_format(frame->format)
+                ? sender->_encoder->pack(frame->data, frame->timestamp)
+                : sender->_encoder->encode(*frame,
+                                           sender->_force_keyframe);
         sender->_force_keyframe = false;
 
         for (size_t i = 0; i < payloads.size(); ++i) {
@@ -185,13 +189,13 @@ connection_impl::_sender_send_loop(std::weak_ptr<rtp_sender> weak_sender,
                                           payloads[i].size());
             rtp_buf[0] = has_ext ? 0x90 : 0x80;
             bool last = (i == payloads.size() - 1);
-            rtp_buf[1] = frame->payload_type | (last ? 0x80 : 0);
+            rtp_buf[1] = sender->_pt | (last ? 0x80 : 0);
             uint16_t seq = ++sender->_seq;
             asioice::binary::write_big<uint16_t>(rtp_buf.data() + 2, seq);
             asioice::binary::write_big<uint32_t>(rtp_buf.data() + 4,
                                                     ts ? ts : frame->timestamp);
             asioice::binary::write_big<uint32_t>(rtp_buf.data() + 8,
-                                                    frame->ssrc);
+                                                    sender->_ssrc);
             if (has_ext) {
                 asioice::binary::write_big<uint16_t>(
                     rtp_buf.data() + 12, 0xBEDE);
@@ -221,7 +225,7 @@ connection_impl::_sender_send_loop(std::weak_ptr<rtp_sender> weak_sender,
                                        connection_impl::TWCC_SENT_SIZE] =
                             connection_impl::_twcc_sent_entry{
                                 .transport_seq = twcc_seq,
-                                .ssrc = frame->ssrc,
+                                .ssrc = sender->_ssrc,
                                 .size = rtp_buf.size(),
                                 .send_time =
                                     std::chrono::steady_clock::now()};
@@ -563,10 +567,7 @@ asioice::task<void> connection_impl::do_connect() {
 
                             media_frame frame;
                             frame.kind = it->second->kind();
-                            frame.ssrc = pkt->ssrc;
                             frame.timestamp = pkt->timestamp;
-                            frame.payload_type = pkt->payload_type;
-                            frame.marker = pkt->marker;
                             frame.sequence_number = pkt->sequence_number;
                             frame.data.assign(payload_start,
                                               payload_start + payload_len);

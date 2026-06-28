@@ -106,12 +106,14 @@ class H264EncoderImpl : public encoder {
         std::unique_ptr<AVPacket, void(*)(AVPacket*)> pkt(
             av_packet_alloc(), +[](AVPacket *p) { av_packet_free(&p); });
         std::vector<uint8_t> encoded;
+        int64_t last_pts = AV_NOPTS_VALUE;
         while (true) {
             ret = avcodec_receive_packet(_ctx, pkt.get());
             if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
                 break;
             if (ret < 0)
                 break;
+            last_pts = pkt->pts;
             encoded.insert(encoded.end(), pkt->data,
                            pkt->data + pkt->size);
             av_packet_unref(pkt.get());
@@ -120,7 +122,7 @@ class H264EncoderImpl : public encoder {
             return {{}, 0};
 
         uint32_t rtp_ts =
-            to_rtp_timestamp(pkt->pts, _ctx->time_base);
+            to_rtp_timestamp(last_pts, _ctx->time_base);
         auto payloads = _packetize(encoded);
         return {std::move(payloads), rtp_ts};
     }

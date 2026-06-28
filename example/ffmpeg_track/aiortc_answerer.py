@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Answerer for ffmpeg_track example — receives C++ offer, returns answer."""
-
+"""Offerer for ffmpeg_track example — sends offer, receives C++ answer."""
+    
 import asyncio
 import json
 import sys
@@ -13,6 +13,8 @@ async def main(server="ws://localhost:8086/ws"):
     print("Connected to signaling server")
 
     pc = RTCPeerConnection()
+    pc.addTransceiver("video", direction="recvonly")
+    pc.addTransceiver("audio", direction="recvonly")
     pc_complete = asyncio.Event()
     frame_count = [0]
 
@@ -28,20 +30,19 @@ async def main(server="ws://localhost:8086/ws"):
         if state in ("connected", "failed"):
             pc_complete.set()
 
-    # Receive offer
+    # Create and send offer
+    offer = await pc.createOffer()
+    await pc.setLocalDescription(offer)
+    await ws.send(json.dumps(
+        {"type": "offer", "sdp": pc.localDescription.sdp}))
+    print("Sent offer")
+
+    # Receive answer
     msg = await ws.recv()
     msg = json.loads(msg)
-    print(f"Got {msg['type']}, SDP={msg['sdp'][:100]}...")
-
+    print(f"Got {msg['type']}")
     await pc.setRemoteDescription(
-        RTCSessionDescription(sdp=msg["sdp"], type="offer"))
-
-    # Create and send answer
-    answer = await pc.createAnswer()
-    await pc.setLocalDescription(answer)
-    await ws.send(json.dumps(
-        {"type": "answer", "sdp": pc.localDescription.sdp}))
-    print("Sent answer")
+        RTCSessionDescription(sdp=msg["sdp"], type="answer"))
 
     print("Waiting for connection...")
     while not pc_complete.is_set():

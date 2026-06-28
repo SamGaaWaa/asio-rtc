@@ -133,6 +133,12 @@ struct rtp_receiver : std::enable_shared_from_this<rtp_receiver> {
         return _transceiver.lock();
     }
 
+    void set_track(std::shared_ptr<media_track> t) { _track = std::move(t); }
+
+    const std::shared_ptr<codecs::decoder> &decoder() const noexcept {
+        return _decoder;
+    }
+
     const rtp_receive_parameters &parameters() const noexcept {
         return _parameters;
     }
@@ -141,14 +147,13 @@ struct rtp_receiver : std::enable_shared_from_this<rtp_receiver> {
     friend struct rtp_transceiver;
     friend struct connection_impl;
 
-    void set_track(std::shared_ptr<media_track> t) { _track = std::move(t); }
-
     std::string _mid{};
     std::shared_ptr<media_track> _track{};
     std::weak_ptr<rtp_transceiver> _transceiver{};
     bool _stopped = false;
     rtp_receive_parameters _parameters{};
     std::optional<any_sender<void>> _rtcp_loop{};
+    std::shared_ptr<codecs::decoder> _decoder{};
 };
 
 struct rtp_transceiver_init {
@@ -193,7 +198,7 @@ struct rtp_transceiver : std::enable_shared_from_this<rtp_transceiver> {
 
     void wire_back_references();
 
-    sdp_media to_offer_sdp_media() const;
+    sdp_media to_offer_sdp_media(std::string mid) const;
     sdp_media to_answer_sdp_media(const sdp_media &remote_media) const;
     void from_remote_sdp(const sdp_media &remote);
 

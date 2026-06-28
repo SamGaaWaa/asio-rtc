@@ -25,10 +25,6 @@ std::vector<sdp_codec> default_video_codecs() {
     return {
         {96, "VP8", 90000, "", ""},
         {97, "rtx", 90000, "", "apt=96"},
-        {98, "H264", 90000, "", ""},
-        {99, "rtx", 90000, "", "apt=98"},
-        {100, "VP9", 90000, "", ""},
-        {101, "rtx", 90000, "", "apt=100"},
     };
 }
 
@@ -81,9 +77,9 @@ void rtp_transceiver::set_codecs(std::vector<sdp_codec> codecs) {
     _codecs = std::move(codecs);
 }
 
-sdp_media rtp_transceiver::to_offer_sdp_media() const {
+sdp_media rtp_transceiver::to_offer_sdp_media(std::string mid) const {
     sdp_media m;
-    m.mid = _mid;
+    m.mid = mid;
     m.media_type = infer_media_type(_codecs);
     m.port = 9;
     m.proto = "UDP/TLS/RTP/SAVPF";
@@ -94,14 +90,14 @@ sdp_media rtp_transceiver::to_offer_sdp_media() const {
     m.rtcp_mux = true;
     m.msids.clear();
     for (const auto &ms : _sender->_msids)
-        m.msids.push_back(ms + " " + _mid);
+        m.msids.push_back(ms + " " + mid);
 
     for (const auto &c : _codecs) {
         m.payload_types.push_back(c.payload_type);
         m.rtpmaps.push_back(c);
         if (!c.fmtp_params.empty())
-            m.fmtps.push_back(std::to_string(c.payload_type) +
-                              " " + c.fmtp_params);
+            m.fmtps.push_back(std::to_string(c.payload_type) + " " +
+                              c.fmtp_params);
     }
 
     // Default RTP header extensions per media kind
@@ -109,26 +105,21 @@ sdp_media rtp_transceiver::to_offer_sdp_media() const {
     if (media == "video") {
         m.extmaps = {
             {1, "urn:ietf:params:rtp-hdrext:sdes:mid"},
-            {3,
-             "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time"},
-            {4,
-             "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01"}};
+            {3, "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time"},
+            {4, "http://www.ietf.org/id/"
+                "draft-holmer-rmcat-transport-wide-cc-extensions-01"}};
         for (const auto &c : _codecs) {
-            if (c.name != "rtx" && c.name != "red" &&
-                c.name != "ulpfec" && c.name != "flexfec") {
-                m.rtcp_fbs.push_back(
-                    {c.payload_type, "nack", ""});
-                m.rtcp_fbs.push_back(
-                    {c.payload_type, "nack", "pli"});
-                m.rtcp_fbs.push_back(
-                    {c.payload_type, "goog-remb", ""});
+            if (c.name != "rtx" && c.name != "red" && c.name != "ulpfec" &&
+                c.name != "flexfec") {
+                m.rtcp_fbs.push_back({c.payload_type, "nack", ""});
+                m.rtcp_fbs.push_back({c.payload_type, "nack", "pli"});
+                m.rtcp_fbs.push_back({c.payload_type, "goog-remb", ""});
             }
         }
     } else if (media == "audio") {
-        m.extmaps = {
-            {1, "urn:ietf:params:rtp-hdrext:sdes:mid"},
-            {4,
-             "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01"}};
+        m.extmaps = {{1, "urn:ietf:params:rtp-hdrext:sdes:mid"},
+                     {4, "http://www.ietf.org/id/"
+                         "draft-holmer-rmcat-transport-wide-cc-extensions-01"}};
     }
 
     return m;
@@ -162,8 +153,30 @@ sdp_media rtp_transceiver::to_answer_sdp_media(const sdp_media &remote) const {
             const auto &remote_codec = remote.rtpmaps[j];
             if (local_codec.name == remote_codec.name &&
                 local_codec.clock_rate == remote_codec.clock_rate &&
-                local_codec.encoding_params ==
-                    remote_codec.encoding_params) {
+                local_codec.encoding_params == remote_codec.encoding_params) {
+
+                // H264: only accept baseline profile (42001f)
+                if (local_codec.name == "H264") {
+                    for (const auto &f : remote.fmtps) {
+                        std::string_view sv = f;
+                        auto space = sv.find(' ');
+                        if (space == std::string_view::npos)
+                            continue;
+                        auto pt = sv.substr(0, space);
+                        if (pt != std::to_string(remote_codec.payload_type))
+                            continue;
+                        auto params = sv.substr(space + 1);
+                        auto pos = params.find("profile-level-id=");
+                        if (pos != std::string_view::npos) {
+                            auto plid = params.substr(pos + 17, 6);
+                            if (plid != "42001f") {
+                                used[j] = true;
+                                continue;
+                            }
+                        }
+                    }
+                }
+
                 m.payload_types.push_back(remote_codec.payload_type);
                 m.rtpmaps.push_back(remote_codec);
                 used[j] = true;
@@ -199,11 +212,7 @@ sdp_media rtp_transceiver::to_answer_sdp_media(const sdp_media &remote) const {
 }
 
 void rtp_transceiver::from_remote_sdp(const sdp_media &remote) {
-    if (!remote.mid.empty())
-        _mid = remote.mid;
-
     _direction = negotiate_direction(_direction, remote.direction);
-
     if (_receiver) {
         _receiver->_parameters.header_extensions = remote.extmaps;
     }

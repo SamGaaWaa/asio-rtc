@@ -62,9 +62,12 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
         std::shared_ptr<media_track> track, std::vector<std::string> msids,
         std::shared_ptr<rtp_transceiver> transceiver)>;
 
-    using encoder_factory = std::function<
-        std::shared_ptr<codecs::encoder>(int bitrate)>;
+    using encoder_factory =
+        std::function<std::shared_ptr<codecs::encoder>(int bitrate)>;
     using codec_registry = std::unordered_map<std::string, encoder_factory>;
+
+    using decoder_factory = std::function<std::shared_ptr<codecs::decoder>()>;
+    using decoder_registry = std::unordered_map<std::string, decoder_factory>;
 
     struct _remote_stream_stats {
         uint32_t ssrc = 0;
@@ -199,6 +202,7 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
     void on_track(on_track_cb cb);
 
     void register_encoder(std::string name, encoder_factory factory);
+    void register_decoder(std::string name, decoder_factory factory);
 
     rtc_stats_report get_stats() const;
 
@@ -245,6 +249,13 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
     std::vector<std::shared_ptr<rtp_transceiver>> _transceivers{};
     std::vector<std::vector<uint8_t>> _pending_rtcp{};
     std::vector<std::vector<uint8_t>> _pending_rtx{};
+
+    struct _vp8_reassembly_entry {
+        uint32_t timestamp = 0;
+        std::vector<uint8_t> data;
+    };
+    std::unordered_map<uint32_t, _vp8_reassembly_entry> _vp8_reassembly{};
+
     std::unordered_map<uint32_t, std::shared_ptr<media_track_impl>>
         _ssrc_track_map{};
     std::unordered_map<uint32_t, _remote_stream_stats> _stream_stats{};
@@ -289,6 +300,7 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
     on_data_channel_cb _on_remote_channel_cb;
     on_track_cb _on_track_cb;
     codec_registry _codec_registry;
+    decoder_registry _decoder_registry;
     bool _need_sctp{false};
 
     srtp_transport_base::on_new_ssrc_callback_type _pending_srtp_new_ssrc_cb;

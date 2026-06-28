@@ -179,12 +179,14 @@ class Vp8EncoderImpl : public encoder {
         if (!pkt)
             throw std::runtime_error{"av_packet_alloc failed"};
         std::vector<uint8_t> encoded;
+        int64_t last_pts = AV_NOPTS_VALUE;
         while (true) {
             ret = avcodec_receive_packet(_ctx, pkt.get());
             if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
                 break;
             if (ret < 0)
                 break;
+            last_pts = pkt->pts;
             encoded.insert(encoded.end(), pkt->data,
                            pkt->data + pkt->size);
             av_packet_unref(pkt.get());
@@ -192,7 +194,7 @@ class Vp8EncoderImpl : public encoder {
         if (encoded.empty())
             return {{}, 0};
 
-        uint32_t rtp_ts = to_rtp_timestamp(pkt->pts, _ctx->time_base);
+        uint32_t rtp_ts = to_rtp_timestamp(last_pts, _ctx->time_base);
         auto payloads = _packetize(encoded);
         _picture_id = (_picture_id + 1) & 0x7FFF;
         return {std::move(payloads), rtp_ts};

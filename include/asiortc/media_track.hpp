@@ -38,7 +38,7 @@ struct media_frame {
     int width = 0;
     int height = 0;
     uint16_t sequence_number = 0;
-    std::vector<uint8_t> data;
+    std::vector<uint8_t> data{};
 };
 
 struct media_track {

@@ -7,33 +7,26 @@
 
 namespace asiortc {
 
-media_track_impl::media_track_impl(media_kind k, std::string track_id,
-                                   net::io_context &ctx)
-    : _kind{k}, _id{std::move(track_id)}, _ctx{ctx},
+media_track_impl::media_track_impl(media_kind k, std::string track_id)
+    : _kind{k}, _id{std::move(track_id)},
       _jitter(std::chrono::milliseconds(500)) {}
 
 void media_track_impl::stop() { _state = track_state::ended; }
 
 void media_track_impl::push_frame(media_frame frame) {
     _jitter.push(std::move(frame));
+    _on_frame.set_one_value();
 }
 
 asioice::task<std::optional<media_frame>> media_track_impl::recv() {
-    using asioice::utils::use_sender;
-
-    net::steady_timer timer(_ctx);
-
-    while (_state == track_state::live) {
+    auto lk = co_await _mtx.lock();
+    while (true) {
         auto frame = _jitter.pop();
         if (frame)
             co_return frame;
-
-        timer.expires_after(std::chrono::milliseconds(5));
-        auto [ec] = co_await timer.async_wait(net::as_tuple(use_sender));
-        if (ec)
-            break;
+        co_await _on_frame.get_future();
     }
-    co_return std::nullopt;
+    std::unreachable();
 }
 
 } // namespace asiortc

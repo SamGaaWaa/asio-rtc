@@ -172,9 +172,10 @@ namespace {
                 }
             }
 
-            static std::random_device rd;
-            _vpts = rd() & 0x7FFFFFFF;
-            _apts = rd() & 0x7FFFFFFF;
+            static thread_local std::random_device rd;
+            uint32_t base_ts = rd() & 0x7FFFFFFF;
+            _vpts = base_ts;
+            _apts = base_ts;
         }
 
         ~ffmpeg_source() {
@@ -301,8 +302,9 @@ namespace {
             if (_actx) avcodec_flush_buffers(_actx);
             
             static std::random_device rd;
-            _vpts = rd() & 0x7FFFFFFF;
-            _apts = rd() & 0x7FFFFFFF;
+            uint32_t base_ts = rd() & 0x7FFFFFFF;
+            _vpts = base_ts;
+            _apts = base_ts;
             vqueue.clear();
             _apcm.clear();
             
@@ -457,18 +459,27 @@ struct ffmpeg_recorder {
     }
 
     void write_audio(const media_frame &pcm) {
-        if (!_actx) {
+        int sr = pcm.sample_rate ? pcm.sample_rate : _sample_rate;
+        int ch = pcm.channels ? pcm.channels : _ach;
+
+        if (!_actx || _actx->sample_rate != sr ||
+            _actx->ch_layout.nb_channels != ch) {
+            if (_actx) {
+                avcodec_send_frame(_actx, nullptr);
+                avcodec_free_context(&_actx);
+            }
             const AVCodec *ac =
                 avcodec_find_encoder(AV_CODEC_ID_OPUS);
             _actx = avcodec_alloc_context3(ac);
             _actx->sample_fmt = AV_SAMPLE_FMT_S16;
-            _actx->sample_rate = _sample_rate;
+            _actx->sample_rate = sr;
             _actx->bit_rate = 64000;
-            _actx->time_base = {1, _sample_rate};
-            av_channel_layout_default(&_actx->ch_layout, _ach);
+            _actx->time_base = {1, sr};
+            av_channel_layout_default(&_actx->ch_layout, ch);
             avcodec_open2(_actx, ac, nullptr);
             avcodec_parameters_from_context(_ast->codecpar, _actx);
             _ast->time_base = _actx->time_base;
+            _ach = ch;
             _try_write_header();
         }
 
@@ -481,7 +492,7 @@ struct ffmpeg_recorder {
         av_frame_get_buffer(f.get(), 0);
 
         int buf_size = av_samples_get_buffer_size(
-            nullptr, _ach, f->nb_samples, _actx->sample_fmt, 0);
+            nullptr, ch, f->nb_samples, _actx->sample_fmt, 0);
         if (static_cast<int>(pcm.data.size()) >= buf_size)
             std::memcpy(f->data[0], pcm.data.data(), buf_size);
         f->pts = _apts;
@@ -595,18 +606,17 @@ static task<void> ffmpeg_session(net::io_context &ctx, ws_ptr ws) {
         }
     });
 
-    conn->register_encoder("VP8", [](int bps) {
-        return codecs::make_vp8_encoder(bps ? bps : 1000000);
+    conn->register_encoder("VP8", [](const codecs::encoder_params &p) {
+        return codecs::make_vp8_encoder(p);
     });
-    conn->register_encoder("H264", [](int bps) {
-        return codecs::make_h264_encoder(bps ? bps : 1000000);
+    conn->register_encoder("H264", [](const codecs::encoder_params &p) {
+        return codecs::make_h264_encoder(p);
     });
-    conn->register_encoder("VP9", [](int bps) {
-        return codecs::make_vp9_encoder(bps ? bps : 1000000);
+    conn->register_encoder("VP9", [](const codecs::encoder_params &p) {
+        return codecs::make_vp9_encoder(p);
     });
-    conn->register_encoder("opus", [](int bps) {
-        (void)bps;
-        return codecs::make_opus_encoder(64000);
+    conn->register_encoder("opus", [](const codecs::encoder_params &p) {
+        return codecs::make_opus_encoder(p);
     });
 
     conn->register_decoder("VP8",
@@ -664,14 +674,14 @@ static task<void> ffmpeg_session(net::io_context &ctx, ws_ptr ws) {
             auto tr = conn->add_transceiver(
                 media_kind::video,
                 {.direction = sdp_direction::sendrecv,
-                 .streams = {"camera"}});
+                 .streams = {"ffmpeg"}});
             tr->sender()->set_track(track);
             std::cout << "Set video sendrecv mid=" << tr->mid() << '\n';
         } else {
             auto tr = conn->add_transceiver(
                 media_kind::audio,
                 {.direction = sdp_direction::sendrecv,
-                 .streams = {"mic"}});
+                 .streams = {"ffmpeg"}});
             tr->sender()->set_track(track);
             std::cout << "Set audio sendrecv mid=" << tr->mid() << '\n';
         }

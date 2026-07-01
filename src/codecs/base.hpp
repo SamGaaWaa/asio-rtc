@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -10,6 +11,11 @@ struct media_frame;
 } // namespace asiortc
 
 namespace asiortc::codecs {
+
+struct encoder_params {
+    std::optional<int> bitrate;        // bps
+    std::optional<int> max_framerate;  // fps numerator (den=1)
+};
 
 struct encoder {
     encoder() = default;
@@ -25,7 +31,7 @@ struct encoder {
     virtual std::pair<std::vector<std::vector<uint8_t>>, uint32_t>
     pack(const std::vector<uint8_t> &encoded_data, uint32_t timestamp) = 0;
 
-    virtual void set_bitrate(int bitrate) {}
+    virtual void set_parameters(const encoder_params &p) {}
 };
 
 struct decoder {

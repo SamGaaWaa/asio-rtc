@@ -116,7 +116,7 @@ struct srtp_transport : srtp_transport_base {
   ~srtp_transport() { detach(); }
 
   auto send_rtp(std::span<const uint8_t> data, std::span<uint8_t> buf) {
-    if (!rtp::is_rtp_packet(data))
+    if (!rtp::is_rtp_packet(data.data(), data.size()))
       throw std::invalid_argument{"!rtp::is_rtp_packet(data)"};
     auto enc = protect_rtp(data, buf);
     if (enc.empty())

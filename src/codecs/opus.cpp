@@ -26,7 +26,8 @@ namespace {
 
 class OpusEncoderImpl : public encoder {
   public:
-    OpusEncoderImpl(int bitrate) : _bitrate(bitrate) {}
+    OpusEncoderImpl(const encoder_params &p)
+        : _bitrate(p.bitrate.value_or(64'000)) {}
 
     ~OpusEncoderImpl() {
         if (_ctx)
@@ -55,8 +56,13 @@ class OpusEncoderImpl : public encoder {
         f->pts = frame.timestamp;
         av_frame_get_buffer(f.get(), 0);
 
+        if (!f->data[0])
+            return {{}, 0};
+
         int buf_size = av_samples_get_buffer_size(
             nullptr, _channels, _frame_samples, _ctx->sample_fmt, 0);
+        if (buf_size < 0)
+            return {{}, 0};
         if (static_cast<int>(frame.data.size()) >= buf_size)
             std::memcpy(f->data[0], frame.data.data(), buf_size);
 
@@ -95,10 +101,12 @@ class OpusEncoderImpl : public encoder {
         return {{encoded_data}, timestamp};
     }
 
-    void set_bitrate(int bitrate) override {
-        _bitrate = bitrate;
-        if (_ctx)
-            _ctx->bit_rate = bitrate;
+    void set_parameters(const encoder_params &p) override {
+        if (p.bitrate) {
+            _bitrate = *p.bitrate;
+            if (_ctx)
+                _ctx->bit_rate = _bitrate;
+        }
     }
 
   private:
@@ -168,24 +176,33 @@ class OpusDecoderImpl : public decoder {
             mf.format = media_format::pcm_s16le;
             mf.timestamp =
                 static_cast<uint32_t>(f->pts != AV_NOPTS_VALUE ? f->pts : 0);
+            mf.sample_rate = f->sample_rate;
+            mf.channels = f->ch_layout.nb_channels;
 
-            int channels = f->ch_layout.nb_channels;
-            int sample_size = av_get_bytes_per_sample(
-                static_cast<AVSampleFormat>(f->format));
-            int data_size = f->nb_samples * channels * sample_size;
-            mf.data.resize(data_size);
+            AVSampleFormat actual_fmt =
+                static_cast<AVSampleFormat>(f->format);
+            bool planar = av_sample_fmt_is_planar(actual_fmt);
+            int channels = mf.channels;
 
-            bool planar =
-                av_sample_fmt_is_planar(static_cast<AVSampleFormat>(f->format));
-            if (planar) {
-                for (int ch = 0; ch < channels; ++ch)
-                    for (int s = 0; s < f->nb_samples; ++s)
-                        std::memcpy(
-                            mf.data.data() +
-                                (s * channels + ch) * sample_size,
-                            f->data[ch] + s * sample_size, sample_size);
+            if (actual_fmt == AV_SAMPLE_FMT_S16 ||
+                actual_fmt == AV_SAMPLE_FMT_S16P) {
+                // Already S16: copy directly
+                int sample_size = av_get_bytes_per_sample(actual_fmt);
+                int data_size = f->nb_samples * channels * sample_size;
+                mf.data.resize(data_size);
+                if (planar) {
+                    for (int ch = 0; ch < channels; ++ch)
+                        for (int s = 0; s < f->nb_samples; ++s)
+                            std::memcpy(
+                                mf.data.data() +
+                                    (s * channels + ch) * sample_size,
+                                f->data[ch] + s * sample_size,
+                                sample_size);
+                } else {
+                    std::memcpy(mf.data.data(), f->data[0], data_size);
+                }
             } else {
-                std::memcpy(mf.data.data(), f->data[0], data_size);
+                // Float or other format — skip, needs swr_convert
             }
 
             frames.push_back(std::move(mf));
@@ -200,8 +217,8 @@ class OpusDecoderImpl : public decoder {
 
 } // namespace
 
-std::shared_ptr<encoder> make_opus_encoder(int bitrate) {
-    return std::make_shared<OpusEncoderImpl>(bitrate);
+std::shared_ptr<encoder> make_opus_encoder(const encoder_params &p) {
+    return std::make_shared<OpusEncoderImpl>(p);
 }
 
 std::shared_ptr<decoder> make_opus_decoder() {

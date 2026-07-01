@@ -285,7 +285,7 @@ static void test_rtp_write_with_extension() {
   original.extension = 1;
   original.extension_profile = 0xABCD;
   uint8_t ext_data[] = {0x01, 0x02, 0x03, 0x04, 0x05};
-  original.extension_data = {ext_data, 5};
+  original.extension_data.assign(ext_data, ext_data + 5);
   original.payload_type = 96;
   original.ssrc = 1;
   std::vector<uint8_t> payload = {10, 20, 30};
@@ -337,18 +337,18 @@ static void test_rtp_write_with_padding() {
 static void test_rtp_static_helpers() {
   auto raw = make_basic_rtp(42, 789, 0xCAFEBABE);
 
-  ASSERT(rtp::is_rtp_packet(raw));
-  ASSERT(!rtp::is_rtp_packet({}));
-  ASSERT(!rtp::is_rtp_packet({raw.data(), 5}));
+  ASSERT(rtp::is_rtp_packet(raw.data(), raw.size()));
+  ASSERT(!rtp::is_rtp_packet(nullptr, 0));
+  ASSERT(!rtp::is_rtp_packet(raw.data(), 5));
   // wrong version
   std::vector<uint8_t> bad(12);
   bad[0] = 0x00;  // V=0
   bad[1] = 0x60;
-  ASSERT(!rtp::is_rtp_packet(bad));
+  ASSERT(!rtp::is_rtp_packet(bad.data(), bad.size()));
 
-  ASSERT(rtp::rtp_packet::get_payload_type(raw) == 96);
-  ASSERT(rtp::rtp_packet::get_sequence_number(raw) == 42);
-  ASSERT(rtp::rtp_packet::get_ssrc(raw) == 0xCAFEBABE);
+  ASSERT(rtp::rtp_packet::get_payload_type(raw.data()) == 96);
+  ASSERT(rtp::rtp_packet::get_sequence_number(raw.data()) == 42);
+  ASSERT(rtp::rtp_packet::get_ssrc(raw.data()) == 0xCAFEBABE);
 
   std::cout << "  static helpers OK\n";
 }

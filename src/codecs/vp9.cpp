@@ -30,8 +30,9 @@ static constexpr int PACKET_MAX = 1300;
 
 class Vp9EncoderImpl : public encoder {
   public:
-    Vp9EncoderImpl(int bitrate)
-        : _bitrate(bitrate) {
+    Vp9EncoderImpl(const encoder_params &p)
+        : _bitrate(p.bitrate.value_or(1'000'000)),
+          _max_framerate(p.max_framerate.value_or(30)) {
 
         static thread_local std::random_device rd;
         std::mt19937 gen(rd());
@@ -112,10 +113,18 @@ class Vp9EncoderImpl : public encoder {
         return {payloads, timestamp};
     }
 
-    void set_bitrate(int bitrate) override {
-        _bitrate = bitrate;
-        if (_ctx)
-            _ctx->bit_rate = bitrate;
+    void set_parameters(const encoder_params &p) override {
+        if (p.bitrate) {
+            _bitrate = *p.bitrate;
+            if (_ctx)
+                _ctx->bit_rate = _bitrate;
+        }
+        if (p.max_framerate && _ctx &&
+            (_ctx->framerate.num != *p.max_framerate ||
+             _ctx->framerate.den != 1)) {
+            _ctx->framerate = {*p.max_framerate, 1};
+            _ctx->gop_size = *p.max_framerate * 60;
+        }
     }
 
   private:
@@ -130,8 +139,8 @@ class Vp9EncoderImpl : public encoder {
         _ctx->bit_rate = _bitrate;
         _ctx->pix_fmt = AV_PIX_FMT_YUV420P;
         _ctx->time_base = {1, 90000};
-        _ctx->framerate = {30, 1};
-        _ctx->gop_size = 3000;
+        _ctx->framerate = {_max_framerate, 1};
+        _ctx->gop_size = _max_framerate * 60;
         _ctx->profile = 0;
         av_opt_set_int(_ctx->priv_data, "cpu-used", 5, 0);
         av_opt_set(_ctx->priv_data, "deadline", "realtime", 0);
@@ -165,7 +174,7 @@ class Vp9EncoderImpl : public encoder {
     }
 
     AVCodecContext *_ctx = nullptr;
-    int _width, _height, _bitrate;
+    int _width, _height, _bitrate, _max_framerate;
     uint16_t _picture_id = 0;
 };
 
@@ -185,6 +194,9 @@ class Vp9DecoderImpl : public decoder {
     std::vector<media_frame>
     decode(const std::vector<uint8_t> &rtp_payload,
            uint32_t timestamp) override {
+        if (rtp_payload.empty())
+            return {};
+
         std::unique_ptr<AVPacket, void(*)(AVPacket*)> pkt(
             av_packet_alloc(), +[](AVPacket *p) { av_packet_free(&p); });
         pkt->data = const_cast<uint8_t *>(rtp_payload.data());
@@ -234,8 +246,8 @@ class Vp9DecoderImpl : public decoder {
 
 } // namespace
 
-std::shared_ptr<encoder> make_vp9_encoder(int bitrate) {
-    return std::make_shared<Vp9EncoderImpl>(bitrate);
+std::shared_ptr<encoder> make_vp9_encoder(const encoder_params &p) {
+    return std::make_shared<Vp9EncoderImpl>(p);
 }
 
 std::shared_ptr<decoder> make_vp9_decoder() {

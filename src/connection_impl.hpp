@@ -62,8 +62,8 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
         std::shared_ptr<media_track> track, std::vector<std::string> msids,
         std::shared_ptr<rtp_transceiver> transceiver)>;
 
-    using encoder_factory =
-        std::function<std::shared_ptr<codecs::encoder>(int bitrate)>;
+    using encoder_factory = std::function<std::shared_ptr<codecs::encoder>(
+        const codecs::encoder_params &)>;
     using codec_registry = std::unordered_map<std::string, encoder_factory>;
 
     using decoder_factory = std::function<std::shared_ptr<codecs::decoder>()>;
@@ -148,18 +148,12 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
     }
 
     void on_new_ssrc(srtp_transport_base::on_new_ssrc_callback_type cb) {
-        if (_srtp_transport)
-            _srtp_transport->on_new_ssrc(std::move(cb));
-        else
-            _pending_srtp_new_ssrc_cb = std::move(cb);
+        _on_new_ssrc_cb = std::move(cb);
     }
 
     void on_rtp_rtcp_packet(
         srtp_transport_base::on_rtp_rtcp_packet_callback_type cb) {
-        if (_srtp_transport)
-            _srtp_transport->on_rtp_rtcp_packet(std::move(cb));
-        else
-            _pending_srtp_rtp_cb = std::move(cb);
+        _on_rtp_rtcp_cb = std::move(cb);
     }
 
     signaling_state_t signaling_state() const noexcept {
@@ -221,7 +215,9 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
     asioice::task<void> do_connect();
     static ice_connection_state_t
     to_ice_connection_state(asioice::agent_state_t s) noexcept;
-    void on_data_channel(std::shared_ptr<data_channel_type> ch);
+    void do_on_data_channel(std::shared_ptr<data_channel_type> ch);
+    void do_on_rtp_rtcp_packet(asioice::io_buffer_ptr);
+    bool do_on_new_ssrc(uint32_t ssrc, std::span<const uint8_t> data);
     void _start_sender_loops();
     static asioice::task<void>
     _sender_send_loop(std::weak_ptr<rtp_sender> weak_sender,
@@ -249,12 +245,6 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
     std::vector<std::shared_ptr<rtp_transceiver>> _transceivers{};
     std::vector<std::vector<uint8_t>> _pending_rtcp{};
     std::vector<std::vector<uint8_t>> _pending_rtx{};
-
-    struct _vp8_reassembly_entry {
-        uint32_t timestamp = 0;
-        std::vector<uint8_t> data;
-    };
-    std::unordered_map<uint32_t, _vp8_reassembly_entry> _vp8_reassembly{};
 
     std::unordered_map<uint32_t, std::shared_ptr<media_track_impl>>
         _ssrc_track_map{};
@@ -303,8 +293,8 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
     decoder_registry _decoder_registry;
     bool _need_sctp{false};
 
-    srtp_transport_base::on_new_ssrc_callback_type _pending_srtp_new_ssrc_cb;
-    srtp_transport_base::on_rtp_rtcp_packet_callback_type _pending_srtp_rtp_cb;
+    srtp_transport_base::on_new_ssrc_callback_type _on_new_ssrc_cb{};
+    srtp_transport_base::on_rtp_rtcp_packet_callback_type _on_rtp_rtcp_cb{};
 
     std::optional<any_sender<void>> _ice_connection_state_watcher{};
 };

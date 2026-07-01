@@ -8,6 +8,7 @@
 #include "asioice/detail/shared_promise.hpp"
 #include "asioice/detail/async_mutex.hpp"
 #include "jitter_buffer.hpp"
+#include "rtp.hpp"
 
 namespace asiortc {
 
@@ -20,7 +21,8 @@ struct media_track_impl : public media_track {
     void stop() override;
     asioice::task<std::optional<media_frame>> recv() override;
 
-    void push_frame(media_frame frame);
+    void push_frame(rtp::rtp_packet pkt);
+    asioice::task<std::optional<rtp::rtp_packet>> recv_packet();
 
   private:
     media_kind _kind;

@@ -32,12 +32,23 @@ inline bool is_encoded_format(media_format fmt) noexcept {
 enum class track_state : uint8_t { live = 0, ended = 1 };
 
 struct media_frame {
-    media_kind kind{};
+    media_kind kind{};              // audio / video
     media_format format = media_format::unknown;
-    uint32_t timestamp = 0;
+    
+    // 核心字段：
+    // 时间戳必须是 RTP 时钟域 (视频 90kHz, 音频 48kHz)
+    // 这样无论是直通还是转码，都能直接使用，无需转换
+    uint32_t timestamp = 0;         
+
+    // 视频元数据 (Audio 时忽略)
     int width = 0;
     int height = 0;
-    uint16_t sequence_number = 0;
+
+    // 音频元数据 (Video 时忽略，建议补充这两个字段)
+    int sample_rate = 0;            // 例如 48000
+    int channels = 0;               // 例如 2
+
+    // 原始数据
     std::vector<uint8_t> data{};
 };
 

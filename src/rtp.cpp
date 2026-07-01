@@ -27,15 +27,15 @@ static_assert(sizeof(rtp_extension_header_t) == 4,
               "RTP extension header must be 4 bytes");
 #pragma pack(pop)
 
-bool is_rtp_packet(std::span<const uint8_t> data) noexcept {
-  if (data.size() < sizeof(rtp_header_t))
+bool is_rtp_packet(const uint8_t *data, std::size_t len) noexcept {
+  if (len < sizeof(rtp_header_t))
     return false;
   return (data[0] >> 6) == 2;
 }
 
 std::optional<rtp_packet> rtp_packet::parse(const void* data,
                                             std::size_t len) noexcept {
-  if (!is_rtp_packet({(const uint8_t*)data, len}))
+  if (!is_rtp_packet(static_cast<const uint8_t*>(data), len))
     return {};
 
   const auto* header = static_cast<const rtp_header_t*>(data);
@@ -77,17 +77,17 @@ std::optional<rtp_packet> rtp_packet::parse(const void* data,
     offset += sizeof(rtp_extension_header_t);
     if (len < offset + ext_len)
       return {};
-    pkt.extension_data = {ptr + offset, ext_len};
+    pkt.extension_data.assign(ptr + offset, ptr + offset + ext_len);
     offset += ext_len;
   }
 
-  pkt.payload = {ptr + offset, len - offset};
+  pkt.payload.assign(ptr + offset, ptr + len);
 
   if (pkt.padding && !pkt.payload.empty()) {
     uint8_t pad_len = pkt.payload.back();
     if (pad_len == 0 || pad_len > pkt.payload.size())
       return {};
-    pkt.payload = pkt.payload.first(pkt.payload.size() - pad_len);
+    pkt.payload.resize(pkt.payload.size() - pad_len);
   }
 
   return pkt;
@@ -172,21 +172,17 @@ std::size_t rtp_packet::serialized_size() const noexcept {
   return total;
 }
 
-uint32_t rtp_packet::get_ssrc(std::span<const uint8_t> data) noexcept {
-  assert(data.size() >= sizeof(rtp_header_t));
-  const auto* hd = reinterpret_cast<const rtp_header_t*>(data.data());
+uint32_t rtp_packet::get_ssrc(const uint8_t *data) noexcept {
+  const auto* hd = reinterpret_cast<const rtp_header_t*>(data);
   return asioice::binary::ntoh<uint32_t>(hd->ssrc);
 }
 
-uint8_t rtp_packet::get_payload_type(std::span<const uint8_t> data) noexcept {
-  assert(data.size() >= sizeof(rtp_header_t));
+uint8_t rtp_packet::get_payload_type(const uint8_t *data) noexcept {
   return data[1] & 0x7F;
 }
 
-uint16_t rtp_packet::get_sequence_number(
-    std::span<const uint8_t> data) noexcept {
-  assert(data.size() >= sizeof(rtp_header_t));
-  const auto* hd = reinterpret_cast<const rtp_header_t*>(data.data());
+uint16_t rtp_packet::get_sequence_number(const uint8_t *data) noexcept {
+  const auto* hd = reinterpret_cast<const rtp_header_t*>(data);
   return asioice::binary::ntoh<uint16_t>(hd->sequence_number);
 }
 

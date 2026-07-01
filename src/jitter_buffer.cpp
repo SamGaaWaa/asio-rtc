@@ -1,9 +1,12 @@
 #include "jitter_buffer.hpp"
 
+#include <vector>
+
 namespace asiortc {
 
-jitter_buffer::jitter_buffer(std::chrono::milliseconds max_delay)
-    : _max_delay(max_delay) {}
+jitter_buffer::jitter_buffer(std::chrono::milliseconds max_delay,
+                             bool is_video)
+    : _max_delay(max_delay), _is_video(is_video) {}
 
 uint32_t jitter_buffer::_extend_seq(uint16_t seq, uint32_t last_extended) {
     uint32_t extended = (last_extended & 0xFFFF0000) | seq;
@@ -12,8 +15,8 @@ uint32_t jitter_buffer::_extend_seq(uint16_t seq, uint32_t last_extended) {
     return extended;
 }
 
-void jitter_buffer::push(media_frame frame) {
-    uint32_t extended = _extend_seq(frame.sequence_number,
+void jitter_buffer::push(rtp::rtp_packet pkt) {
+    uint32_t extended = _extend_seq(pkt.sequence_number,
                                     _next_extended_seq);
 
     if (_first_packet) {
@@ -28,23 +31,15 @@ void jitter_buffer::push(media_frame frame) {
     if (it != _sorted.end())
         return;
 
-    _sorted.emplace(extended, std::move(frame));
+    _sorted.emplace(extended, std::move(pkt));
 }
 
-std::optional<media_frame> jitter_buffer::pop() {
+std::optional<rtp::rtp_packet> jitter_buffer::pop_frame() {
     if (_sorted.empty())
         return std::nullopt;
 
     auto it = _sorted.begin();
     uint32_t extended = it->first;
-
-    if (extended == _next_extended_seq) {
-        auto frame = std::move(it->second);
-        _sorted.erase(it);
-        ++_next_extended_seq;
-        _gap_start.reset();
-        return frame;
-    }
 
     if (extended > _next_extended_seq) {
         auto now = std::chrono::steady_clock::now();
@@ -53,13 +48,67 @@ std::optional<media_frame> jitter_buffer::pop() {
         if (now - *_gap_start >= _max_delay) {
             _next_extended_seq = extended;
             _gap_start.reset();
-            return pop();
+        } else {
+            return std::nullopt;
         }
+    }
+
+    if (extended < _next_extended_seq) {
+        _sorted.erase(it);
+        return pop_frame();
+    }
+
+    // extended == _next_extended_seq
+    _gap_start.reset();
+    uint32_t ts = it->second.timestamp;
+    uint32_t next_expected = _next_extended_seq;
+
+    // Scan forward: collect all consecutive packets with the same timestamp
+    while (it != _sorted.end() && it->first == next_expected &&
+           it->second.timestamp == ts) {
+        ++next_expected;
+        ++it;
+    }
+
+    // Check if frame is complete: next entry either has a different timestamp
+    // or there's a gap.  If the next entry has the same timestamp, the frame
+    // is still incomplete → wait for more packets.
+    if (it != _sorted.end() && it->first == next_expected &&
+        it->second.timestamp == ts) {
         return std::nullopt;
     }
 
-    _sorted.erase(it);
-    return pop();
+    // For video: if we reached end of buffer with only one entry, we may have
+    // only the first fragment of a multi-packet frame.  Wait for more packets
+    // unless this is a gap (higher seq) or the packet is old.
+    if (_is_video && it == _sorted.end() &&
+        next_expected == _next_extended_seq + 1) {
+        auto now = std::chrono::steady_clock::now();
+        if (!_gap_start)
+            _gap_start = now;
+        if (now - *_gap_start < _max_delay / 2)
+            return std::nullopt;
+    }
+
+    // Frame is complete — concatenate all payloads
+    std::vector<uint8_t> joined;
+    auto erase_end = it;
+    it = _sorted.begin();
+    while (it != erase_end) {
+        auto &p = it->second.payload;
+        joined.insert(joined.end(), p.begin(), p.end());
+        ++it;
+    }
+
+    rtp::rtp_packet assembled;
+    assembled.sequence_number =
+        static_cast<uint16_t>(_next_extended_seq);
+    assembled.timestamp = ts;
+    assembled.payload = std::move(joined);
+
+    _next_extended_seq = next_expected;
+    _sorted.erase(_sorted.begin(), erase_end);
+    return assembled;
 }
 
 void jitter_buffer::reset() {

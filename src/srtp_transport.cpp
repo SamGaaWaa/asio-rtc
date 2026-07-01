@@ -201,7 +201,7 @@ bool srtp_transport_base::datagram_received(asioice::io_buffer_ptr& buffer) {
   if ((first_byte & 0xC0) != 0x80)
     return false;
 
-  uint32_t ssrc = rtp::rtp_packet::get_ssrc(data_span);
+  uint32_t ssrc = rtp::rtp_packet::get_ssrc(data_span.data());
 
   bool active = _active_ssrcs.contains(ssrc);
   if (!active) {

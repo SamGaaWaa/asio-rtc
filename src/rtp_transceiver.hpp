@@ -203,6 +203,8 @@ struct rtp_transceiver : std::enable_shared_from_this<rtp_transceiver> {
     void from_remote_sdp(const sdp_media &remote);
 
   private:
+    friend struct connection_impl;
+
     std::weak_ptr<connection_impl> _conn;
     std::string _mid{};
     sdp_direction _direction{sdp_direction::sendrecv};

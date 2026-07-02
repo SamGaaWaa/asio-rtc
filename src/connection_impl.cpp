@@ -95,20 +95,17 @@ static bool ice_options_trickle_from(const session_description &sdp) {
 }
 
 asioice::task<void>
-connection_impl::_sender_send_loop(std::weak_ptr<rtp_sender> weak_sender,
+connection_impl::_sender_send_loop(std::shared_ptr<rtp_sender> sender,
                                    std::shared_ptr<srtp_transport_type> srtp) {
-
+    asioice::utils::scope_guard on_exit([]() noexcept {
+        ICE_IN_DEBUG { std::cout << "_sender_send_loop exited\n"; }
+    });
     std::vector<uint8_t> enc_buf;
 
-    while (true) {
-        auto sender = weak_sender.lock();
-        if (!sender || sender->stopped())
-            co_return;
-
-        auto track = sender->track();
-        if (!track)
-            co_return;
-
+    auto track = sender->track();
+    if (!track)
+        co_return;
+    while (!sender->stopped()) {
         auto frame = co_await track->recv();
         if (!frame || frame->data.empty())
             co_return;
@@ -117,12 +114,9 @@ connection_impl::_sender_send_loop(std::weak_ptr<rtp_sender> weak_sender,
             auto transceiver = sender->transceiver();
             if (!transceiver || transceiver->codecs().empty())
                 co_return;
-            auto conn = transceiver->connection();
-            if (!conn)
-                co_return;
             for (const auto &c : transceiver->codecs()) {
-                auto it = conn->_codec_registry.find(c.name);
-                if (it != conn->_codec_registry.end()) {
+                auto it = this->_codec_registry.find(c.name);
+                if (it != this->_codec_registry.end()) {
                     sender->_encoder = it->second({});
                     sender->_pt = c.payload_type;
                     break;
@@ -141,69 +135,61 @@ connection_impl::_sender_send_loop(std::weak_ptr<rtp_sender> weak_sender,
             uint16_t twcc_seq = 0;
             // Build RTP header extension data
             std::vector<uint8_t> ext_data;
-            if (sender->_encoder) {
-                auto tr = sender->transceiver();
-                if (tr) {
-                    auto extmaps =
-                        tr->receiver()->parameters().header_extensions;
-                    auto ext_id = [&](const std::string &uri) -> int {
-                        for (auto &e : extmaps)
-                            if (e.uri == uri)
-                                return e.id;
-                        return 0;
-                    };
+            auto tr = sender->transceiver();
+            if (tr) {
+                auto extmaps = tr->receiver()->parameters().header_extensions;
+                auto ext_id = [&](std::string_view uri) -> int {
+                    for (const auto &e : extmaps)
+                        if (e.uri == uri)
+                            return e.id;
+                    return 0;
+                };
 
-                    // MID ext (1 byte)
-                    int mid_id = ext_id("urn:ietf:params:rtp-hdrext:sdes:mid");
-                    if (mid_id > 0 && mid_id < 15) {
-                        std::string mid = tr->mid();
-                        ext_data.push_back(
-                            static_cast<uint8_t>((mid_id << 4) | 0));
-                        ext_data.push_back(
-                            static_cast<uint8_t>(mid.empty() ? '0' : mid[0]));
-                    }
-
-                    // abs-send-time ext (3 bytes) — video only
-                    if (frame->kind == media_kind::video) {
-                        int abs_id = ext_id("http://www.webrtc.org/experiments/"
-                                            "rtp-hdrext/abs-send-time");
-                        if (abs_id > 0 && abs_id < 15) {
-                            uint64_t ntp = sender->_ntp_timestamp;
-                            uint32_t abs = static_cast<uint32_t>(
-                                ntp ? (ntp >> 14) & 0xFFFFFF : 0);
-                            ext_data.push_back(
-                                static_cast<uint8_t>((abs_id << 4) | 2));
-                            ext_data.push_back(
-                                static_cast<uint8_t>((abs >> 16) & 0xFF));
-                            ext_data.push_back(
-                                static_cast<uint8_t>((abs >> 8) & 0xFF));
-                            ext_data.push_back(
-                                static_cast<uint8_t>(abs & 0xFF));
-                        }
-                    }
-
-                    // transport-cc ext (2 bytes)
-                    {
-                        int tcc_id = ext_id("http://www.ietf.org/id/"
-                                            "draft-holmer-rmcat-transport-wide-"
-                                            "cc-extensions-01");
-                        if (tcc_id > 0 && tcc_id < 15) {
-                            auto c = tr->connection();
-                            if (c) {
-                                twcc_seq = ++c->_transport_wide_seq;
-                                ext_data.push_back(
-                                    static_cast<uint8_t>((tcc_id << 4) | 1));
-                                ext_data.push_back(static_cast<uint8_t>(
-                                    (twcc_seq >> 8) & 0xFF));
-                                ext_data.push_back(
-                                    static_cast<uint8_t>(twcc_seq & 0xFF));
-                            }
-                        }
-                    }
-
-                    while (ext_data.size() % 4)
-                        ext_data.push_back(0);
+                // MID ext (1 byte)
+                int mid_id = ext_id("urn:ietf:params:rtp-hdrext:sdes:mid");
+                if (mid_id > 0 && mid_id < 15) {
+                    std::string mid = tr->mid();
+                    ext_data.push_back(static_cast<uint8_t>((mid_id << 4) | 0));
+                    ext_data.push_back(
+                        static_cast<uint8_t>(mid.empty() ? '0' : mid[0]));
                 }
+
+                // abs-send-time ext (3 bytes) — video only
+                if (frame->kind == media_kind::video) {
+                    int abs_id = ext_id("http://www.webrtc.org/experiments/"
+                                        "rtp-hdrext/abs-send-time");
+                    if (abs_id > 0 && abs_id < 15) {
+                        uint64_t ntp = sender->_ntp_timestamp;
+                        uint32_t abs = static_cast<uint32_t>(
+                            ntp ? (ntp >> 14) & 0xFFFFFF : 0);
+                        ext_data.push_back(
+                            static_cast<uint8_t>((abs_id << 4) | 2));
+                        ext_data.push_back(
+                            static_cast<uint8_t>((abs >> 16) & 0xFF));
+                        ext_data.push_back(
+                            static_cast<uint8_t>((abs >> 8) & 0xFF));
+                        ext_data.push_back(static_cast<uint8_t>(abs & 0xFF));
+                    }
+                }
+
+                // transport-cc ext (2 bytes)
+                {
+                    int tcc_id = ext_id("http://www.ietf.org/id/"
+                                        "draft-holmer-rmcat-transport-wide-"
+                                        "cc-extensions-01");
+                    if (tcc_id > 0 && tcc_id < 15) {
+                        twcc_seq = ++this->_transport_wide_seq;
+                        ext_data.push_back(
+                            static_cast<uint8_t>((tcc_id << 4) | 1));
+                        ext_data.push_back(
+                            static_cast<uint8_t>((twcc_seq >> 8) & 0xFF));
+                        ext_data.push_back(
+                            static_cast<uint8_t>(twcc_seq & 0xFF));
+                    }
+                }
+
+                while (ext_data.size() % 4)
+                    ext_data.push_back(0);
             }
 
             bool has_ext = !ext_data.empty();
@@ -231,28 +217,19 @@ connection_impl::_sender_send_loop(std::weak_ptr<rtp_sender> weak_sender,
             std::memcpy(rtp_buf.data() + ext_payload_off, payloads[i].data(),
                         payloads[i].size());
 
-            enc_buf.resize(rtp_buf.size() +
-                           srtp_transport_base::max_protect_rtp_overhead());
-            auto r = co_await srtp->send_rtp(rtp_buf, enc_buf);
+            auto r = co_await srtp->send_rtp(rtp_buf);
             if (std::get<0>(r))
                 co_return;
 
-            {
-                auto txr = sender->transceiver();
-                auto c = txr ? txr->connection() : nullptr;
-                if (c) {
-                    c->_tx_packets++;
-                    c->_tx_bytes += rtp_buf.size();
-                    if (twcc_seq) {
-                        c->_twcc_sent[twcc_seq %
-                                      connection_impl::TWCC_SENT_SIZE] =
-                            connection_impl::_twcc_sent_entry{
-                                .transport_seq = twcc_seq,
-                                .ssrc = sender->_ssrc,
-                                .size = rtp_buf.size(),
-                                .send_time = std::chrono::steady_clock::now()};
-                    }
-                }
+            this->_tx_packets++;
+            this->_tx_bytes += rtp_buf.size();
+            if (twcc_seq) {
+                this->_twcc_sent[twcc_seq % connection_impl::TWCC_SENT_SIZE] =
+                    connection_impl::_twcc_sent_entry{
+                        .transport_seq = twcc_seq,
+                        .ssrc = sender->_ssrc,
+                        .size = rtp_buf.size(),
+                        .send_time = std::chrono::steady_clock::now()};
             }
 
             sender->_octet_count += static_cast<uint32_t>(payloads[i].size());
@@ -272,7 +249,6 @@ connection_impl::_sender_send_loop(std::weak_ptr<rtp_sender> weak_sender,
                     .seq = seq,
                     .timestamp = ts ? ts : frame->timestamp};
         }
-        continue;
     }
 }
 
@@ -498,7 +474,8 @@ asioice::task<void> connection_impl::do_connect() {
                 receiver->_rtcp_loop = stdexec::spawn_future(
                     stdexec::starts_on(
                         stdexec::inline_scheduler{},
-                        _receiver_rtcp_loop(receiver->weak_from_this())),
+                        _receiver_rtcp_loop(receiver->shared_from_this(),
+                                            _srtp_transport)),
                     _scope.get_token());
             }
         }
@@ -962,36 +939,24 @@ connection_impl::add_transceiver(std::shared_ptr<media_track> track,
     return t;
 }
 
-asioice::task<void>
-connection_impl::_sender_rtcp_loop(std::weak_ptr<rtp_sender> weak_sender,
-                                   std::shared_ptr<srtp_transport_type> srtp) {
+asioice::task<void> connection_impl::_sender_rtcp_loop(
+    std::shared_ptr<rtp_sender> sender,
+    std::shared_ptr<connection_impl::srtp_transport_type> srtp) {
+    asioice::utils::scope_guard on_exit([]() noexcept {
+        ICE_IN_DEBUG { std::cout << "_sender_rtcp_loop exited\n"; }
+    });
     static thread_local std::random_device rd;
     std::mt19937 gen(rd());
     std::uniform_real_distribution<double> dist(0.5, 1.5);
     std::vector<uint8_t> compound;
 
-    while (true) {
+    net::steady_timer timer(this->get_executor());
+    while (sender->stopped()) {
         auto delay =
             std::chrono::milliseconds(static_cast<int>(dist(gen) * 1000));
-
-        // Get executor from sender's connection for timer
-        auto sender_check = weak_sender.lock();
-        if (!sender_check || sender_check->stopped())
-            co_return;
-        auto transceiver = sender_check->transceiver();
-        auto conn = transceiver ? transceiver->connection() : nullptr;
-        if (!conn)
-            co_return;
-
-        net::steady_timer timer(
-            static_cast<net::io_context &>(conn->get_executor().context()));
         timer.expires_after(delay);
         auto ec = co_await timer.async_wait(asioice::utils::use_sender);
         if (ec)
-            co_return;
-
-        auto sender = weak_sender.lock();
-        if (!sender || sender->stopped())
             co_return;
 
         compound.clear();
@@ -1023,53 +988,37 @@ connection_impl::_sender_rtcp_loop(std::weak_ptr<rtp_sender> weak_sender,
 }
 
 asioice::task<void> connection_impl::_receiver_rtcp_loop(
-    std::weak_ptr<rtp_receiver> weak_receiver) {
-
-    std::random_device rd;
+    std::shared_ptr<rtp_receiver> receiver,
+    std::shared_ptr<connection_impl::srtp_transport_type> srtp) {
+    asioice::utils::scope_guard on_exit([]() noexcept {
+        ICE_IN_DEBUG { std::cout << "_receiver_rtcp_loop exited\n"; }
+    });
+    static thread_local std::random_device rd;
     std::mt19937 gen(rd());
     std::uniform_real_distribution<double> dist(0.5, 1.5);
 
-    while (true) {
+    net::steady_timer timer(this->get_executor());
+
+    auto track = receiver->track();
+    if (!track)
+        co_return;
+    while (receiver->stopped()) {
         auto delay =
             std::chrono::milliseconds(static_cast<int>(dist(gen) * 1000));
-
-        auto receiver = weak_receiver.lock();
-        if (!receiver || receiver->stopped())
-            co_return;
-
-        auto transceiver = receiver->transceiver();
-        auto conn = transceiver ? transceiver->connection() : nullptr;
-        if (!conn)
-            co_return;
-
-        auto srtp = conn->srtp();
-        if (!srtp)
-            co_return;
-
-        net::steady_timer timer(
-            static_cast<net::io_context &>(conn->get_executor().context()));
         timer.expires_after(delay);
         auto ec = co_await timer.async_wait(asioice::utils::use_sender);
         if (ec)
             co_return;
 
-        receiver = weak_receiver.lock();
-        if (!receiver || receiver->stopped())
-            co_return;
-
-        auto track = receiver->track();
-        if (!track)
-            continue;
-
         // Build RR for SSRCs belonging to this receiver's track
         std::vector<uint8_t> compound;
-        for (auto &[ssrc, st] : conn->_stream_stats) {
+        for (auto &[ssrc, st] : this->_stream_stats) {
             if (st.packets_received == 0)
                 continue;
 
             // Only report on SSRCs associated with this receiver's track
-            auto it_track = conn->_ssrc_track_map.find(ssrc);
-            if (it_track == conn->_ssrc_track_map.end() ||
+            auto it_track = this->_ssrc_track_map.find(ssrc);
+            if (it_track == this->_ssrc_track_map.end() ||
                 it_track->second != track)
                 continue;
 
@@ -1153,13 +1102,13 @@ void connection_impl::_start_sender_loops() {
         sender->_send_rtp_loop = stdexec::spawn_future(
             stdexec::starts_on(
                 stdexec::inline_scheduler{},
-                _sender_send_loop(sender->weak_from_this(), _srtp_transport)),
+                _sender_send_loop(sender->shared_from_this(), _srtp_transport)),
             _scope.get_token());
 
         sender->_send_rtcp_loop = stdexec::spawn_future(
             stdexec::starts_on(
                 stdexec::inline_scheduler{},
-                _sender_rtcp_loop(sender->weak_from_this(), _srtp_transport)),
+                _sender_rtcp_loop(sender->shared_from_this(), _srtp_transport)),
             _scope.get_token());
     }
 }

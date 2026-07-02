@@ -218,4 +218,11 @@ void rtp_transceiver::from_remote_sdp(const sdp_media &remote) {
     }
 }
 
+rtp_transceiver::~rtp_transceiver() noexcept {
+    if (_sender)
+        _sender->stop();
+    if (_receiver)
+        _receiver->stop();
+}
+
 } // namespace asiortc

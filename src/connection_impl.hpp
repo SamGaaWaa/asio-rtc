@@ -239,14 +239,15 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
     void do_on_rtp_rtcp_packet(asioice::io_buffer_ptr);
     bool do_on_new_ssrc(uint32_t ssrc, std::span<const uint8_t> data);
     void _start_sender_loops();
-    static asioice::task<void>
-    _sender_send_loop(std::weak_ptr<rtp_sender> weak_sender,
+    asioice::task<void>
+    _sender_send_loop(std::shared_ptr<rtp_sender> sender,
                       std::shared_ptr<srtp_transport_type> srtp);
-    static asioice::task<void>
-    _sender_rtcp_loop(std::weak_ptr<rtp_sender> weak_sender,
+    asioice::task<void>
+    _sender_rtcp_loop(std::shared_ptr<rtp_sender> sender,
                       std::shared_ptr<srtp_transport_type> srtp);
-    static asioice::task<void>
-    _receiver_rtcp_loop(std::weak_ptr<rtp_receiver> weak_receiver);
+    asioice::task<void>
+    _receiver_rtcp_loop(std::shared_ptr<rtp_receiver> receiver,
+                        std::shared_ptr<srtp_transport_type> srtp);
 
     executor_type _executor;
     stdexec::counting_scope _scope{};

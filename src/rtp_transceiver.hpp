@@ -127,7 +127,10 @@ struct rtp_receiver : std::enable_shared_from_this<rtp_receiver> {
     }
 
     bool stopped() const noexcept { return _stopped; }
-    void stop() { _stopped = true; }
+    void stop() {
+        _stopped = true;
+        _rtcp_loop.reset();
+    }
 
     std::shared_ptr<rtp_transceiver> transceiver() const noexcept {
         return _transceiver.lock();
@@ -172,6 +175,13 @@ struct rtp_transceiver : std::enable_shared_from_this<rtp_transceiver> {
         if (_conn.expired())
             throw std::invalid_argument{"conn == nullptr"};
     }
+
+    rtp_transceiver(const rtp_transceiver &) = delete;
+    rtp_transceiver(rtp_transceiver &&) = delete;
+    rtp_transceiver &operator=(const rtp_transceiver &) = delete;
+    rtp_transceiver &operator=(rtp_transceiver &&) = delete;
+
+    ~rtp_transceiver() noexcept;
 
     const std::string &mid() const noexcept { return _mid; }
     void set_mid(std::string mid) { _mid = std::move(mid); }

@@ -297,7 +297,7 @@ static asioice::agent_config get_agent_config(asiortc::configuration &&cfg) {
 connection_impl::connection_impl(connection_impl::executor_type ex,
                                  asiortc::configuration cfg)
     : _executor{std::move(ex)}, _bundle_policy{cfg.bundle_policy},
-      _agent{_executor, get_agent_config(std::move(cfg))} {
+      _agent{_executor, get_agent_config(std::move(cfg))}, _sync_sender{*this} {
     _agent.on_local_candidates(
         std::bind_front(&connection_impl::do_on_candidates, this));
 }
@@ -994,17 +994,6 @@ connection_impl::_sender_rtcp_loop(std::weak_ptr<rtp_sender> weak_sender,
         if (!sender || sender->stopped())
             co_return;
 
-        // Drain pending event-driven RTCP
-        auto pending_rtcp = std::move(conn->_pending_rtcp);
-        for (auto &p : pending_rtcp)
-            co_await srtp->send_rtcp(p);
-
-        // Drain pending RTX retransmissions (already SRTP-encrypted)
-        auto pending_rtx = std::move(conn->_pending_rtx);
-        for (auto &p : pending_rtx)
-            co_await conn->_ice_transport->async_send(
-                std::span<const uint8_t>(p));
-
         compound.clear();
         size_t sr_size = 28;
         std::vector<uint8_t> sr(sr_size);
@@ -1067,11 +1056,6 @@ asioice::task<void> connection_impl::_receiver_rtcp_loop(
         receiver = weak_receiver.lock();
         if (!receiver || receiver->stopped())
             co_return;
-
-        // Drain pending event-driven RTCP
-        auto pending_rtcp = std::move(conn->_pending_rtcp);
-        for (auto &p : pending_rtcp)
-            co_await srtp->send_rtcp(p);
 
         auto track = receiver->track();
         if (!track)
@@ -1184,6 +1168,7 @@ void connection_impl::close() noexcept {
     _scope.request_stop();
     _connection_state = connection_state_t::closed;
     _agent.close();
+    _sync_sender.stop();
     if (_data_channel_manager)
         _data_channel_manager->stop();
     _ice_transport.reset();
@@ -1435,14 +1420,14 @@ void connection_impl::do_on_rtp_rtcp_packet(asioice::io_buffer_ptr buf) {
                 auto nack = rtcp::rtcp_rtpfb{rtcp::packet_type::RTPFB_NACK, 0,
                                              pkt->ssrc, lost}
                                 .bytes();
-                _pending_rtcp.push_back(std::move(nack));
+                _sync_sender.send_rtcp(std::move(nack));
             }
 
             if (st.consecutive_lost >= 3 && _srtp_transport) {
                 auto pli =
                     rtcp::rtcp_psfb{rtcp::packet_type::PSFB_PLI, 0, pkt->ssrc}
                         .bytes();
-                _pending_rtcp.push_back(std::move(pli));
+                _sync_sender.send_rtcp(std::move(pli));
                 st.consecutive_lost = 0;
             }
         } else {
@@ -1462,8 +1447,7 @@ void connection_impl::do_on_rtp_rtcp_packet(asioice::io_buffer_ptr buf) {
                 pkt->payload.erase(pkt->payload.begin(),
                                    pkt->payload.begin() + 2);
             } else {
-                pkt->payload = depayload(codec->name,
-                                         std::move(pkt->payload));
+                pkt->payload = depayload(codec->name, std::move(pkt->payload));
             }
 
             it->second->push_frame(std::move(*pkt));
@@ -1564,16 +1548,7 @@ void connection_impl::do_on_rtp_rtcp_packet(asioice::io_buffer_ptr buf) {
                                 rtx.data() + 12, seq);
                             std::memcpy(rtx.data() + 14, e->payload.data(),
                                         e->payload.size());
-
-                            std::vector<uint8_t> enc_buf(
-                                rtx.size() + srtp_transport_base::
-                                                 max_protect_rtp_overhead());
-                            auto enc =
-                                _srtp_transport->protect_rtp(rtx, enc_buf);
-                            if (!enc.empty()) {
-                                _pending_rtx.push_back(std::vector<uint8_t>(
-                                    enc.begin(), enc.end()));
-                            }
+                            _sync_sender.send_rtp(std::move(rtx));
                         }
                     }
                 }
@@ -1619,6 +1594,60 @@ ssrc_done:
     if (_on_new_ssrc_cb)
         return _on_new_ssrc_cb(ssrc, data);
     return true;
+}
+
+void connection_impl::sync_rtp_rtcp_sender::send_rtp(
+    std::vector<uint8_t> data) {
+    if (_impl._connection_state == connection_state_t::closed ||
+        !_impl._srtp_transport)
+        return;
+    _pending_rtp.push(std::move(data));
+    if (!_send_rtp_task)
+        _send_rtp_task = stdexec::spawn_future(
+            [](auto srtp, auto &q) -> asioice::task<void> {
+                asioice::utils::scope_guard on_exit([]() noexcept {
+                    ICE_IN_DEBUG {
+                        std::cout
+                            << "sync_rtp_rtcp_sender::_send_rtp_task exited\n";
+                    }
+                });
+                while (true) {
+                    auto data = q.try_pop();
+                    if (!data)
+                        data = co_await q.async_pop_stoppable();
+                    if (!data)
+                        co_return;
+                    co_await srtp->send_rtp(*data);
+                }
+            }(_impl._srtp_transport, _pending_rtp),
+            _impl._scope.get_token());
+}
+
+void connection_impl::sync_rtp_rtcp_sender::send_rtcp(
+    std::vector<uint8_t> data) {
+    if (_impl._connection_state == connection_state_t::closed ||
+        !_impl._srtp_transport)
+        return;
+    _pending_rtcp.push(std::move(data));
+    if (!_send_rtcp_task)
+        _send_rtcp_task = stdexec::spawn_future(
+            [](auto srtp, auto &q) -> asioice::task<void> {
+                asioice::utils::scope_guard on_exit([]() noexcept {
+                    ICE_IN_DEBUG {
+                        std::cout
+                            << "sync_rtp_rtcp_sender::_send_rtcp_task exited\n";
+                    }
+                });
+                while (true) {
+                    auto data = q.try_pop();
+                    if (!data)
+                        data = co_await q.async_pop_stoppable();
+                    if (!data)
+                        co_return;
+                    co_await srtp->send_rtcp(*data);
+                }
+            }(_impl._srtp_transport, _pending_rtcp),
+            _impl._scope.get_token());
 }
 
 } // namespace asiortc

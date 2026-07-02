@@ -6,6 +6,7 @@
 #include "asioice/config.hpp"
 #include "asioice/data_channel.hpp"
 #include "asioice/detail/property.hpp"
+#include "asioice/detail/async_queue.hpp"
 #include "asioice/dtls_transport.hpp"
 #include "asioice/ssl/dtls_config.hpp"
 #include "asioice/task.hpp"
@@ -208,6 +209,25 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
     void on_remote_channel(on_data_channel_cb cb);
 
   private:
+    struct sync_rtp_rtcp_sender {
+        sync_rtp_rtcp_sender(connection_impl &impl) : _impl{impl} {}
+
+        void stop() noexcept {
+            _send_rtcp_task.reset();
+            _send_rtp_task.reset();
+        }
+
+        void send_rtp(std::vector<uint8_t> data);
+        void send_rtcp(std::vector<uint8_t> data);
+
+      private:
+        connection_impl &_impl;
+        asioice::async_queue<std::vector<uint8_t>> _pending_rtcp{64};
+        asioice::async_queue<std::vector<uint8_t>> _pending_rtp{64};
+        std::optional<any_sender<void>> _send_rtcp_task{};
+        std::optional<any_sender<void>> _send_rtp_task{};
+    };
+
     asioice::task<void> apply_descriptions();
     void start_gathering();
     void do_on_candidates(std::span<const asioice::candidate>);
@@ -243,8 +263,7 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
     std::optional<datachannel_manager_type> _data_channel_manager{};
 
     std::vector<std::shared_ptr<rtp_transceiver>> _transceivers{};
-    std::vector<std::vector<uint8_t>> _pending_rtcp{};
-    std::vector<std::vector<uint8_t>> _pending_rtx{};
+    sync_rtp_rtcp_sender _sync_sender;
 
     std::unordered_map<uint32_t, std::shared_ptr<media_track_impl>>
         _ssrc_track_map{};

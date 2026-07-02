@@ -249,6 +249,10 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
     std::unordered_map<uint32_t, std::shared_ptr<media_track_impl>>
         _ssrc_track_map{};
     std::unordered_map<uint32_t, _remote_stream_stats> _stream_stats{};
+    std::unordered_map<uint8_t, sdp_codec> _pt_codec_map{};
+
+    void _rebuild_pt_map();
+    const sdp_codec *_find_codec(uint8_t pt) const;
 
     std::string _transport_stats_id{};
     uint64_t _tx_packets = 0, _tx_bytes = 0;

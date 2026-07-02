@@ -421,6 +421,18 @@ static std::vector<uint8_t> depayload(const std::string &codec_name,
     return payload;
 }
 
+void connection_impl::_rebuild_pt_map() {
+    _pt_codec_map.clear();
+    for (const auto &t : _transceivers)
+        for (const auto &c : t->codecs())
+            _pt_codec_map.emplace(c.payload_type, c);
+}
+
+const sdp_codec *connection_impl::_find_codec(uint8_t pt) const {
+    auto it = _pt_codec_map.find(pt);
+    return it != _pt_codec_map.end() ? &it->second : nullptr;
+}
+
 asioice::task<void> connection_impl::do_connect() {
     _connection_state = connection_state_t::connecting;
     asioice::utils::scope_guard on_exit([this]() noexcept {
@@ -553,6 +565,7 @@ connection_impl::set_local_description(session_description desc) {
         _signaling_state = signaling_state_t::have_local_pranswer;
 
     co_await apply_descriptions();
+    _rebuild_pt_map();
     start_gathering();
     start_connecting();
 }
@@ -637,6 +650,7 @@ connection_impl::set_remote_description(session_description desc) {
                     }
                 }
                 (*it)->set_codecs(std::move(codecs));
+                _rebuild_pt_map();
                 if (!(*it)->codecs().empty())
                     tr = *it;
             }
@@ -716,6 +730,7 @@ connection_impl::set_remote_description(session_description desc) {
     }
 
     co_await apply_descriptions();
+    _rebuild_pt_map();
     start_connecting();
 }
 
@@ -935,6 +950,7 @@ connection_impl::add_transceiver(media_kind kind, rtp_transceiver_init init) {
         kind, "recv-" + std::to_string(_transceivers.size()));
     t->receiver()->set_track(std::move(recv_track));
     _transceivers.push_back(t);
+    _rebuild_pt_map();
     return t;
 }
 
@@ -1435,29 +1451,23 @@ void connection_impl::do_on_rtp_rtcp_packet(asioice::io_buffer_ptr buf) {
 
         auto it = _ssrc_track_map.find(pkt->ssrc);
         if (it != _ssrc_track_map.end()) {
+            auto *codec = _find_codec(pkt->payload_type);
+            if (!codec)
+                goto skip_push;
+
             // RTX: extract OSN, strip 2-byte prefix
-            bool is_rtx = false;
-            for (auto &t : _transceivers)
-                for (auto &c : t->codecs())
-                    if (c.payload_type == pkt->payload_type && c.name == "rtx")
-                        is_rtx = true;
-            if (is_rtx && pkt->payload.size() >= 2) {
+            if (codec->name == "rtx" && pkt->payload.size() >= 2) {
                 pkt->sequence_number = asioice::binary::ntoh<uint16_t>(
                     *reinterpret_cast<const uint16_t *>(pkt->payload.data()));
                 pkt->payload.erase(pkt->payload.begin(),
                                    pkt->payload.begin() + 2);
+            } else {
+                pkt->payload = depayload(codec->name,
+                                         std::move(pkt->payload));
             }
 
-            // Depayload: strip VP8/VP9 descriptor
-            for (const auto &t : _transceivers)
-                for (const auto &c : t->codecs())
-                    if (c.payload_type == pkt->payload_type) {
-                        pkt->payload =
-                            depayload(c.name, std::move(pkt->payload));
-                        goto push;
-                    }
-        push:
             it->second->push_frame(std::move(*pkt));
+        skip_push:;
         }
     } else {
         // Handle compound RTCP

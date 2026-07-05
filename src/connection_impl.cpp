@@ -125,10 +125,8 @@ connection_impl::_sender_send_loop(std::shared_ptr<rtp_sender> sender,
                 for (size_t i = 0; i < n; ++i) {
                     codecs::encoder_params ep;
                     if (i < encs.size() && encs[i].max_bitrate)
-                        ep.bitrate = static_cast<int>(
-                            *encs[i].max_bitrate);
-                    sender->_encoders.push_back(
-                        it->second(ep));
+                        ep.bitrate = static_cast<int>(*encs[i].max_bitrate);
+                    sender->_encoders.push_back(it->second(ep));
                 }
                 break;
             }
@@ -153,109 +151,93 @@ connection_impl::_sender_send_loop(std::shared_ptr<rtp_sender> sender,
                 std::vector<uint8_t> ext_data;
                 auto tr = sender->transceiver();
                 if (tr) {
-                    const auto& extmaps =
+                    const auto &extmaps =
                         tr->receiver()->parameters().header_extensions;
                     const auto ext_id = [&](std::string_view uri) -> int {
                         for (const auto &e : extmaps)
-                            if (e.uri == uri) return e.id;
+                            if (e.uri == uri)
+                                return e.id;
                         return 0;
                     };
 
-                    int mid_id =
-                        ext_id("urn:ietf:params:rtp-hdrext:sdes:mid");
+                    int mid_id = ext_id("urn:ietf:params:rtp-hdrext:sdes:mid");
                     if (mid_id > 0 && mid_id < 15) {
                         std::string mid = tr->mid();
                         ext_data.push_back(
                             static_cast<uint8_t>((mid_id << 4) | 0));
-                        ext_data.push_back(static_cast<uint8_t>(
-                            mid.empty() ? '0' : mid[0]));
+                        ext_data.push_back(
+                            static_cast<uint8_t>(mid.empty() ? '0' : mid[0]));
                     }
 
                     // RID ext (1 byte for single-char rid)
-                    int rid_id = ext_id(
-                        "urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id");
-                    if (rid_id > 0 && rid_id < 15 &&
-                        !stream->rid.empty()) {
+                    int rid_id =
+                        ext_id("urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id");
+                    if (rid_id > 0 && rid_id < 15 && !stream->rid.empty()) {
                         ext_data.push_back(static_cast<uint8_t>(
                             (rid_id << 4) |
                             (static_cast<int>(stream->rid.size()) - 1)));
-                        ext_data.insert(ext_data.end(),
-                                        stream->rid.begin(),
+                        ext_data.insert(ext_data.end(), stream->rid.begin(),
                                         stream->rid.end());
                     }
 
                     if (frame->kind == media_kind::video) {
-                        int abs_id = ext_id(
-                            "http://www.webrtc.org/experiments/"
-                            "rtp-hdrext/abs-send-time");
+                        int abs_id = ext_id("http://www.webrtc.org/experiments/"
+                                            "rtp-hdrext/abs-send-time");
                         if (abs_id > 0 && abs_id < 15) {
-                            uint64_t ntp =
-                                sender->_streams[0]->ntp_timestamp;
+                            uint64_t ntp = sender->_streams[0]->ntp_timestamp;
                             uint32_t abs = static_cast<uint32_t>(
                                 ntp ? (ntp >> 14) & 0xFFFFFF : 0);
-                            ext_data.push_back(static_cast<uint8_t>(
-                                (abs_id << 4) | 2));
-                            ext_data.push_back(static_cast<uint8_t>(
-                                (abs >> 16) & 0xFF));
-                            ext_data.push_back(static_cast<uint8_t>(
-                                (abs >> 8) & 0xFF));
+                            ext_data.push_back(
+                                static_cast<uint8_t>((abs_id << 4) | 2));
+                            ext_data.push_back(
+                                static_cast<uint8_t>((abs >> 16) & 0xFF));
+                            ext_data.push_back(
+                                static_cast<uint8_t>((abs >> 8) & 0xFF));
                             ext_data.push_back(
                                 static_cast<uint8_t>(abs & 0xFF));
                         }
                     }
 
-                    int tcc_id = ext_id(
-                        "http://www.ietf.org/id/"
-                        "draft-holmer-rmcat-transport-wide-"
-                        "cc-extensions-01");
+                    int tcc_id = ext_id("http://www.ietf.org/id/"
+                                        "draft-holmer-rmcat-transport-wide-"
+                                        "cc-extensions-01");
                     if (tcc_id > 0 && tcc_id < 15) {
                         twcc_seq = ++this->_transport_wide_seq;
-                        ext_data.push_back(static_cast<uint8_t>(
-                            (tcc_id << 4) | 1));
-                        ext_data.push_back(static_cast<uint8_t>(
-                            (twcc_seq >> 8) & 0xFF));
-                        ext_data.push_back(static_cast<uint8_t>(
-                            twcc_seq & 0xFF));
+                        ext_data.push_back(
+                            static_cast<uint8_t>((tcc_id << 4) | 1));
+                        ext_data.push_back(
+                            static_cast<uint8_t>((twcc_seq >> 8) & 0xFF));
+                        ext_data.push_back(
+                            static_cast<uint8_t>(twcc_seq & 0xFF));
                     }
 
                     while (ext_data.size() % 4)
                         ext_data.push_back(0);
                 }
 
-                bool has_ext = !ext_data.empty();
-                size_t ext_hdr = has_ext ? 4 : 0;
-                size_t ext_payload_off =
-                    12 + ext_hdr + ext_data.size();
-                std::vector<uint8_t> rtp_buf(ext_payload_off +
-                                              payloads[i].size());
-                rtp_buf[0] = has_ext ? 0x90 : 0x80;
+                rtp::rtp_packet rtp_pkt;
+                rtp_pkt.payload_type = sender->_pt;
                 bool last = (i == payloads.size() - 1);
-                rtp_buf[1] = sender->_pt | (last ? 0x80 : 0);
+                rtp_pkt.marker = last;
                 uint16_t seq = ++stream->seq;
-                asioice::binary::write_big<uint16_t>(rtp_buf.data() + 2,
-                                                      seq);
-                asioice::binary::write_big<uint32_t>(
-                    rtp_buf.data() + 4,
-                    ts ? ts : frame->timestamp);
-                asioice::binary::write_big<uint32_t>(rtp_buf.data() + 8,
-                                                      stream->ssrc);
-                if (has_ext) {
-                    asioice::binary::write_big<uint16_t>(
-                        rtp_buf.data() + 12, 0xBEDE);
-                    asioice::binary::write_big<uint16_t>(
-                        rtp_buf.data() + 14,
-                        static_cast<uint16_t>(ext_data.size() / 4));
-                    std::memcpy(rtp_buf.data() + 16, ext_data.data(),
-                                ext_data.size());
+                rtp_pkt.sequence_number = seq;
+                rtp_pkt.timestamp = ts ? ts : frame->timestamp;
+                rtp_pkt.ssrc = stream->ssrc;
+                rtp_pkt.payload = payloads[i];
+                if (!ext_data.empty()) {
+                    rtp_pkt.extension = 1;
+                    rtp_pkt.extension_profile = 0xBEDE;
+                    rtp_pkt.extension_data = std::move(ext_data);
                 }
-                std::memcpy(rtp_buf.data() + ext_payload_off,
-                            payloads[i].data(), payloads[i].size());
+
+                std::vector<uint8_t> rtp_buf(rtp_pkt.serialized_size());
+                rtp_pkt.write_to(rtp_buf.data(), rtp_buf.size());
 
                 stream->history[seq % rtp_stream::HISTORY_SIZE] =
-                    rtp_stream::history_entry{
-                        .payload = payloads[i],
-                        .seq = seq,
-                        .timestamp = ts ? ts : frame->timestamp};
+                    rtp_stream::history_entry{.payload = payloads[i],
+                                              .seq = seq,
+                                              .timestamp =
+                                                  ts ? ts : frame->timestamp};
 
                 auto r = co_await srtp->send_rtp(rtp_buf);
                 if (std::get<0>(r))
@@ -270,23 +252,19 @@ connection_impl::_sender_send_loop(std::shared_ptr<rtp_sender> sender,
                             .transport_seq = twcc_seq,
                             .ssrc = stream->ssrc,
                             .size = rtp_buf.size(),
-                            .send_time =
-                                std::chrono::steady_clock::now()};
+                            .send_time = std::chrono::steady_clock::now()};
                 }
 
                 stream->octet_count +=
                     static_cast<uint32_t>(payloads[i].size());
                 stream->packet_count++;
                 auto now = std::chrono::high_resolution_clock::now();
-                auto us =
-                    std::chrono::duration_cast<
-                        std::chrono::microseconds>(
-                        now.time_since_epoch())
-                        .count();
+                auto us = std::chrono::duration_cast<std::chrono::microseconds>(
+                              now.time_since_epoch())
+                              .count();
                 stream->ntp_timestamp =
                     static_cast<uint64_t>(us) * 65536 / 1000000;
-                stream->rtp_timestamp =
-                    ts ? ts : frame->timestamp;
+                stream->rtp_timestamp = ts ? ts : frame->timestamp;
             }
         }
     }
@@ -441,17 +419,17 @@ void connection_impl::_rebuild_pt_maps() {
     _pt_codec_map.clear();
     _pt_receiver_map.clear();
     for (const auto &t : _transceivers) {
-        if (!t) continue;
+        if (!t)
+            continue;
         auto recv = t->receiver();
-        auto track = recv
-            ? std::static_pointer_cast<media_track_impl>(recv->track())
-            : nullptr;
+        auto track =
+            recv ? std::static_pointer_cast<media_track_impl>(recv->track())
+                 : nullptr;
         for (const auto &c : t->codecs()) {
             _pt_codec_map.emplace(c.payload_type, c);
             if (recv && track)
                 _pt_receiver_map.try_emplace(
-                    c.payload_type,
-                    _pt_recv_entry{recv, track, c.name});
+                    c.payload_type, _pt_recv_entry{recv, track, c.name});
         }
     }
 }
@@ -669,7 +647,8 @@ connection_impl::set_remote_description(session_description desc) {
                 std::vector<bool> used(rm.rtpmaps.size(), false);
                 for (const auto &lc : (*it)->codecs()) {
                     for (size_t j = 0; j < rm.rtpmaps.size(); ++j) {
-                        if (used[j]) continue;
+                        if (used[j])
+                            continue;
                         const auto &rc = rm.rtpmaps[j];
                         if (rc.name != lc.name ||
                             rc.clock_rate != lc.clock_rate)
@@ -687,7 +666,8 @@ connection_impl::set_remote_description(session_description desc) {
                                         apt_ok = true;
                                         break;
                                     }
-                                if (!apt_ok) continue;
+                                if (!apt_ok)
+                                    continue;
                             }
                         }
                         auto c{lc};
@@ -1031,21 +1011,16 @@ asioice::task<void> connection_impl::_sender_rtcp_loop(
 
         compound.clear();
         for (const auto &stream : sender->_streams) {
-            std::array<uint8_t, 28> sr;
-            sr[0] = (2 << 6) | 0;
-            sr[1] = rtcp::packet_type::SR;
-            asioice::binary::write_big<uint16_t>(sr.data() + 2, 6);
-            asioice::binary::write_big<uint32_t>(sr.data() + 4,
-                                                  stream->ssrc);
-            asioice::binary::write_big<uint64_t>(sr.data() + 8,
-                                                  stream->ntp_timestamp);
-            asioice::binary::write_big<uint32_t>(sr.data() + 16,
-                                                  stream->rtp_timestamp);
-            asioice::binary::write_big<uint32_t>(sr.data() + 20,
-                                                  stream->packet_count);
-            asioice::binary::write_big<uint32_t>(sr.data() + 24,
-                                                  stream->octet_count);
-            compound.insert(compound.end(), sr.begin(), sr.end());
+            rtcp::rtcp_packet sr_pkt;
+            sr_pkt.type = rtcp::packet_type::SR;
+            sr_pkt.ssrc = stream->ssrc;
+            sr_pkt.ntp_timestamp = stream->ntp_timestamp;
+            sr_pkt.rtp_timestamp = stream->rtp_timestamp;
+            sr_pkt.sender_packet_count = stream->packet_count;
+            sr_pkt.sender_octet_count = stream->octet_count;
+            std::vector<uint8_t> sr_buf(sr_pkt.serialized_size());
+            sr_pkt.write_to(sr_buf.data(), sr_buf.size());
+            compound.insert(compound.end(), sr_buf.begin(), sr_buf.end());
         }
 
         auto sdes = rtcp::sdes_chunk{0, "asiortc"}.bytes();
@@ -1124,24 +1099,22 @@ asioice::task<void> connection_impl::_receiver_rtcp_loop(
                     dlsr = static_cast<uint32_t>(d * 65536);
             }
 
-            size_t rr_size = 8 + 24;
-            std::vector<uint8_t> rr(rr_size);
-            rr[0] = (2 << 6) | 1;
-            rr[1] = rtcp::packet_type::RR;
-            uint16_t rr_words = static_cast<uint16_t>(rr_size / 4 - 1);
-            asioice::binary::write_big<uint16_t>(rr.data() + 2, rr_words);
-            asioice::binary::write_big<uint32_t>(rr.data() + 4, 0);
-            asioice::binary::write_big<uint32_t>(rr.data() + 8, ssrc);
-            rr[12] = fraction;
-            rr[13] = static_cast<uint8_t>((cumulative_lost >> 16) & 0xFF);
-            rr[14] = static_cast<uint8_t>((cumulative_lost >> 8) & 0xFF);
-            rr[15] = static_cast<uint8_t>(cumulative_lost & 0xFF);
-            asioice::binary::write_big<uint32_t>(rr.data() + 16, extended_max);
-            asioice::binary::write_big<uint32_t>(rr.data() + 20, jitter);
-            asioice::binary::write_big<uint32_t>(rr.data() + 24, lsr);
-            asioice::binary::write_big<uint32_t>(rr.data() + 28, dlsr);
-
-            compound.insert(compound.end(), rr.begin(), rr.end());
+            rtcp::rtcp_packet rr_pkt;
+            rr_pkt.type = rtcp::packet_type::RR;
+            rr_pkt.report_count = 1;
+            rr_pkt.ssrc = 0;
+            rtcp::report_block rb;
+            rb.ssrc = ssrc;
+            rb.fraction_lost = fraction;
+            rb.cumulative_lost = cumulative_lost;
+            rb.ext_highest_seq = extended_max;
+            rb.jitter = jitter;
+            rb.lsr = lsr;
+            rb.dlsr = dlsr;
+            rr_pkt.blocks.push_back(rb);
+            std::vector<uint8_t> rr_buf(rr_pkt.serialized_size());
+            rr_pkt.write_to(rr_buf.data(), rr_buf.size());
+            compound.insert(compound.end(), rr_buf.begin(), rr_buf.end());
 
             st.expected_prior = st.packets_expected;
             st.received_prior = st.packets_received;
@@ -1299,10 +1272,10 @@ rtc_stats_report connection_impl::get_stats() const {
             auto os = std::make_shared<rtc_outbound_rtp_stream_stats>();
             os->timestamp = now;
             os->type = "outbound-rtp";
-            os->id = "outbound-rtp_" + t->mid() +
-                     (s->_streams.size() > 1
-                          ? "_" + std::to_string(stream->ssrc)
-                          : "");
+            os->id =
+                "outbound-rtp_" + t->mid() +
+                (s->_streams.size() > 1 ? "_" + std::to_string(stream->ssrc)
+                                        : "");
             os->ssrc = stream->ssrc;
             os->kind = track->kind() == media_kind::video ? "video" : "audio";
             os->transport_id = _transport_stats_id;
@@ -1365,9 +1338,9 @@ rtc_stats_report connection_impl::get_stats() const {
 void connection_impl::do_on_rtp_rtcp_packet(asioice::io_buffer_ptr buf) {
     _rx_packets++;
     _rx_bytes += buf->size();
-                auto pkt = rtp::rtp_packet::parse(buf->data(), buf->size());
-                if (pkt) {
-                    if (!pkt->extension_data.empty()) {
+    auto pkt = rtp::rtp_packet::parse(buf->data(), buf->size());
+    if (pkt) {
+        if (!pkt->extension_data.empty()) {
             const auto &ext = pkt->extension_data;
             size_t off = 0;
             while (off + 1 <= ext.size()) {
@@ -1561,23 +1534,24 @@ void connection_impl::do_on_rtp_rtcp_packet(asioice::io_buffer_ptr buf) {
                         if (!s)
                             continue;
                         for (const auto &stream : s->_streams) {
-                            if (cp.media_ssrc &&
-                                stream->ssrc != cp.media_ssrc)
+                            if (cp.media_ssrc && stream->ssrc != cp.media_ssrc)
                                 continue;
-                            auto &e = stream->history[seq % rtp_stream::HISTORY_SIZE];
+                            auto &e =
+                                stream->history[seq % rtp_stream::HISTORY_SIZE];
                             if (e && e->seq == seq) {
                                 // RTX wrap: 12B header + 2B OSN +
                                 // payload
-                                std::vector<uint8_t> rtx(14 + e->payload.size());
+                                std::vector<uint8_t> rtx(14 +
+                                                         e->payload.size());
                                 rtx[0] = 0x80;
                                 rtx[1] = stream->rtx_pt;
                                 uint16_t rseq = ++stream->rtx_seq;
-                                asioice::binary::write_big<uint16_t>(rtx.data() + 2,
-                                                                     rseq);
-                                asioice::binary::write_big<uint32_t>(rtx.data() + 4,
-                                                                     e->timestamp);
-                                asioice::binary::write_big<uint32_t>(rtx.data() + 8,
-                                                                     stream->rtx_ssrc);
+                                asioice::binary::write_big<uint16_t>(
+                                    rtx.data() + 2, rseq);
+                                asioice::binary::write_big<uint32_t>(
+                                    rtx.data() + 4, e->timestamp);
+                                asioice::binary::write_big<uint32_t>(
+                                    rtx.data() + 8, stream->rtx_ssrc);
                                 // OSN: original sequence number
                                 asioice::binary::write_big<uint16_t>(
                                     rtx.data() + 12, seq);
@@ -1616,7 +1590,7 @@ bool connection_impl::do_on_new_ssrc(uint32_t ssrc,
             goto ssrc_done;
 
         _ssrc_track_map[ssrc] = it->second.track;
-        auto& recv = it->second.receiver;
+        auto &recv = it->second.receiver;
         if (!recv->_decoder) {
             auto dit = _decoder_registry.find(it->second.codec_name);
             if (dit != _decoder_registry.end())

@@ -199,8 +199,10 @@ class Vp9DecoderImpl : public decoder {
 
         std::unique_ptr<AVPacket, void(*)(AVPacket*)> pkt(
             av_packet_alloc(), +[](AVPacket *p) { av_packet_free(&p); });
-        pkt->data = const_cast<uint8_t *>(rtp_payload.data());
-        pkt->size = static_cast<int>(rtp_payload.size());
+        if (av_new_packet(pkt.get(),
+                           static_cast<int>(rtp_payload.size())) < 0)
+            return {};
+        std::memcpy(pkt->data, rtp_payload.data(), rtp_payload.size());
         pkt->pts = timestamp;
 
         int ret = avcodec_send_packet(_ctx, pkt.get());

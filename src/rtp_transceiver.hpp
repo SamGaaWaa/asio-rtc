@@ -7,6 +7,7 @@
 
 #include "any_sender.hpp"
 #include "codecs/base.hpp"
+#include "rtp_stream.hpp"
 #include "sdp.hpp"
 
 #include <functional>
@@ -18,7 +19,6 @@ struct media_track;
 
 struct rtp_encoding_parameters {
     bool active = true;
-    std::optional<uint32_t> ssrc;
     std::optional<uint32_t> max_bitrate;
     double scale_resolution_down_by = 1.0;
     std::string scalability_mode;
@@ -74,6 +74,8 @@ struct rtp_sender : std::enable_shared_from_this<rtp_sender> {
 
     const std::vector<std::string> &msids() const noexcept { return _msids; }
 
+    rtp_stream &stream() { return *_streams.at(0); }
+
   private:
     friend struct rtp_transceiver;
     friend struct connection_impl;
@@ -86,35 +88,17 @@ struct rtp_sender : std::enable_shared_from_this<rtp_sender> {
     std::shared_ptr<media_track> _track{};
     std::weak_ptr<rtp_transceiver> _transceiver{};
     bool _stopped = false;
-    uint16_t _seq = 0;
     rtp_send_parameters _parameters{};
     std::optional<any_sender<void>> _send_rtp_loop{};
     std::optional<any_sender<void>> _send_rtcp_loop{};
     std::vector<std::string> _msids{};
     std::shared_ptr<codecs::encoder> _encoder{};
+    std::vector<std::shared_ptr<codecs::encoder>> _encoders{};
+    std::vector<uint8_t> _pts{};
     bool _force_keyframe = true;
-
-    uint32_t _packet_count = 0;
-    uint32_t _octet_count = 0;
-    uint64_t _ntp_timestamp = 0;
-    uint32_t _rtp_timestamp = 0;
-
-    uint16_t _seq_base = 0;
-    uint64_t _ntp_base = 0;
-
-    uint32_t _ssrc = 0;
     uint8_t _pt = 0;
-    uint32_t _rtx_ssrc = 0;
-    uint8_t _rtx_pt = 97;
-    uint16_t _rtx_seq = 0;
 
-    static constexpr size_t RTP_HISTORY = 128;
-    struct _history_entry {
-        std::vector<uint8_t> payload;
-        uint16_t seq = 0;
-        uint32_t timestamp = 0;
-    };
-    std::array<std::optional<_history_entry>, RTP_HISTORY> _history{};
+    std::vector<std::shared_ptr<rtp_stream>> _streams{};
 };
 
 struct rtp_receiver : std::enable_shared_from_this<rtp_receiver> {
@@ -211,6 +195,12 @@ struct rtp_transceiver : std::enable_shared_from_this<rtp_transceiver> {
     sdp_media to_offer_sdp_media(std::string mid) const;
     sdp_media to_answer_sdp_media(const sdp_media &remote_media) const;
     void from_remote_sdp(const sdp_media &remote);
+
+  private:
+    void apply_simulcast_to(sdp_media &m) const;
+
+  public:
+    std::vector<rtp_encoding_parameters> send_encodings;
 
   private:
     friend struct connection_impl;

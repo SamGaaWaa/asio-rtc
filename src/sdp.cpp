@@ -250,6 +250,10 @@ void apply_media_attr(sdp_media &media, std::string_view name,
         media.ssrcs.push_back(vstr);
     } else if (name == "msid") {
         media.msids.push_back(vstr);
+    } else if (name == "rid") {
+        media.rids.push_back(vstr);
+    } else if (name == "simulcast") {
+        media.simulcast = vstr;
     } else if (name == "rtcp-fb") {
         auto fb = parse_rtcpfb(value);
         if (fb)
@@ -519,6 +523,10 @@ std::string session_description::to_string() const {
             out += "a=ssrc:" + s + "\r\n";
         for (const auto &msid : m.msids)
             out += "a=msid:" + msid + "\r\n";
+        for (const auto &rid : m.rids)
+            out += "a=rid:" + rid + "\r\n";
+        if (!m.simulcast.empty())
+            out += "a=simulcast:" + m.simulcast + "\r\n";
 
         if (!m.ice_ufrag.empty())
             out += "a=ice-ufrag:" + m.ice_ufrag + "\r\n";

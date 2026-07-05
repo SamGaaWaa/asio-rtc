@@ -407,33 +407,56 @@ struct ffmpeg_recorder {
         _vst = avformat_new_stream(_fmt, nullptr);
         _ast = avformat_new_stream(_fmt, nullptr);
         avio_open(&_fmt->pb, path.c_str(), AVIO_FLAG_WRITE);
+
+        const AVCodec *vc = avcodec_find_encoder(AV_CODEC_ID_VP8);
+        _vctx = avcodec_alloc_context3(vc);
+        _vctx->width = 640;
+        _vctx->height = 480;
+        _vctx->pix_fmt = AV_PIX_FMT_YUV420P;
+        _vctx->time_base = {_fps_den, _fps_num};
+        _vctx->framerate = {_fps_num, _fps_den};
+        _vctx->bit_rate = 1'000'000;
+        av_opt_set(_vctx->priv_data, "deadline", "realtime", 0);
+        av_opt_set_int(_vctx->priv_data, "cpu-used", 5, 0);
+        avcodec_open2(_vctx, vc, nullptr);
+        avcodec_parameters_from_context(_vst->codecpar, _vctx);
+        _vst->time_base = _vctx->time_base;
+
+        const AVCodec *ac = avcodec_find_encoder(AV_CODEC_ID_OPUS);
+        _actx = avcodec_alloc_context3(ac);
+        _actx->sample_fmt = AV_SAMPLE_FMT_S16;
+        _actx->sample_rate = sample_rate;
+        _actx->bit_rate = 64'000;
+        _actx->time_base = {1, sample_rate};
+        av_channel_layout_default(&_actx->ch_layout, channels);
+        avcodec_open2(_actx, ac, nullptr);
+        avcodec_parameters_from_context(_ast->codecpar, _actx);
+        _ast->time_base = _actx->time_base;
+
+        avformat_write_header(_fmt, nullptr);
+        avio_flush(_fmt->pb);
+        _header_written = true;
         std::cout << "Recording to " << path << "\n";
     }
 
     ~ffmpeg_recorder() { close(); }
 
     void write_video(const media_frame &yuv) {
-        if (!_vctx || _vctx->width != yuv.width ||
+        if (_vctx->width != yuv.width ||
             _vctx->height != yuv.height) {
-            if (_vctx) {
-                avcodec_send_frame(_vctx, nullptr);
-                avcodec_free_context(&_vctx);
-            }
-            const AVCodec *vc =
-                avcodec_find_encoder(AV_CODEC_ID_VP8);
+            avcodec_send_frame(_vctx, nullptr);
+            avcodec_free_context(&_vctx);
+            const AVCodec *vc = avcodec_find_encoder(AV_CODEC_ID_VP8);
             _vctx = avcodec_alloc_context3(vc);
             _vctx->width = yuv.width;
             _vctx->height = yuv.height;
             _vctx->pix_fmt = AV_PIX_FMT_YUV420P;
             _vctx->time_base = {_fps_den, _fps_num};
             _vctx->framerate = {_fps_num, _fps_den};
-            _vctx->bit_rate = 1000000;
+            _vctx->bit_rate = 1'000'000;
             av_opt_set(_vctx->priv_data, "deadline", "realtime", 0);
             av_opt_set_int(_vctx->priv_data, "cpu-used", 5, 0);
             avcodec_open2(_vctx, vc, nullptr);
-            avcodec_parameters_from_context(_vst->codecpar, _vctx);
-            _vst->time_base = _vctx->time_base;
-            _try_write_header();
         }
 
         std::unique_ptr<AVFrame, void(*)(AVFrame*)> f(
@@ -453,7 +476,7 @@ struct ffmpeg_recorder {
             av_packet_rescale_ts(pkt.get(), _vctx->time_base,
                                  _vst->time_base);
             pkt->stream_index = _vst->index;
-            _write_packet(pkt.get());
+            av_interleaved_write_frame(_fmt, pkt.get());
             av_packet_unref(pkt.get());
         }
     }
@@ -462,25 +485,19 @@ struct ffmpeg_recorder {
         int sr = pcm.sample_rate ? pcm.sample_rate : _sample_rate;
         int ch = pcm.channels ? pcm.channels : _ach;
 
-        if (!_actx || _actx->sample_rate != sr ||
+        if (_actx->sample_rate != sr ||
             _actx->ch_layout.nb_channels != ch) {
-            if (_actx) {
-                avcodec_send_frame(_actx, nullptr);
-                avcodec_free_context(&_actx);
-            }
-            const AVCodec *ac =
-                avcodec_find_encoder(AV_CODEC_ID_OPUS);
+            avcodec_send_frame(_actx, nullptr);
+            avcodec_free_context(&_actx);
+            const AVCodec *ac = avcodec_find_encoder(AV_CODEC_ID_OPUS);
             _actx = avcodec_alloc_context3(ac);
             _actx->sample_fmt = AV_SAMPLE_FMT_S16;
             _actx->sample_rate = sr;
-            _actx->bit_rate = 64000;
+            _actx->bit_rate = 64'000;
             _actx->time_base = {1, sr};
             av_channel_layout_default(&_actx->ch_layout, ch);
             avcodec_open2(_actx, ac, nullptr);
-            avcodec_parameters_from_context(_ast->codecpar, _actx);
-            _ast->time_base = _actx->time_base;
             _ach = ch;
-            _try_write_header();
         }
 
         std::unique_ptr<AVFrame, void(*)(AVFrame*)> f(
@@ -493,6 +510,7 @@ struct ffmpeg_recorder {
 
         int buf_size = av_samples_get_buffer_size(
             nullptr, ch, f->nb_samples, _actx->sample_fmt, 0);
+        if (!f->data[0] || buf_size < 0) return;
         if (static_cast<int>(pcm.data.size()) >= buf_size)
             std::memcpy(f->data[0], pcm.data.data(), buf_size);
         f->pts = _apts;
@@ -504,36 +522,8 @@ struct ffmpeg_recorder {
             av_packet_rescale_ts(pkt.get(), _actx->time_base,
                                  _ast->time_base);
             pkt->stream_index = _ast->index;
-            _write_packet(pkt.get());
+            av_interleaved_write_frame(_fmt, pkt.get());
             av_packet_unref(pkt.get());
-        }
-    }
-
-    void _write_packet(AVPacket *pkt) {
-        if (!_fmt) return;
-        if (!_header_written) {
-            _pending_data.emplace_back(pkt->data, pkt->data + pkt->size);
-            _pending_idx.push_back(pkt->stream_index);
-        } else {
-            av_interleaved_write_frame(_fmt, pkt);
-        }
-    }
-
-    void _try_write_header() {
-        if (!_header_written && _vctx && _actx) {
-            avformat_write_header(_fmt, nullptr);
-            avio_flush(_fmt->pb);
-            _header_written = true;
-            for (size_t i = 0; i < _pending_data.size(); ++i) {
-                AVPacket pkt{};
-                pkt.data = const_cast<uint8_t*>(
-                    _pending_data[i].data());
-                pkt.size = static_cast<int>(_pending_data[i].size());
-                pkt.stream_index = _pending_idx[i];
-                av_interleaved_write_frame(_fmt, &pkt);
-            }
-            _pending_data.clear();
-            _pending_idx.clear();
         }
     }
 
@@ -548,7 +538,7 @@ struct ffmpeg_recorder {
                 av_packet_rescale_ts(pkt.get(), _vctx->time_base,
                                      _vst->time_base);
                 pkt->stream_index = _vst->index;
-                _write_packet(pkt.get());
+                av_interleaved_write_frame(_fmt, pkt.get());
                 av_packet_unref(pkt.get());
             }
             avcodec_free_context(&_vctx);
@@ -562,17 +552,14 @@ struct ffmpeg_recorder {
                 av_packet_rescale_ts(pkt.get(), _actx->time_base,
                                      _ast->time_base);
                 pkt->stream_index = _ast->index;
-                _write_packet(pkt.get());
+                av_interleaved_write_frame(_fmt, pkt.get());
                 av_packet_unref(pkt.get());
             }
             avcodec_free_context(&_actx);
         }
-        if (_fmt && _header_written) {
-            av_write_trailer(_fmt);
-            avio_closep(&_fmt->pb);
-            avformat_free_context(_fmt);
-            _fmt = nullptr;
-        } else if (_fmt) {
+        if (_fmt) {
+            if (_header_written)
+                av_write_trailer(_fmt);
             avio_closep(&_fmt->pb);
             avformat_free_context(_fmt);
             _fmt = nullptr;
@@ -582,12 +569,9 @@ struct ffmpeg_recorder {
     AVFormatContext *_fmt = nullptr;
     AVCodecContext *_vctx = nullptr, *_actx = nullptr;
     AVStream *_vst = nullptr, *_ast = nullptr;
-    int64_t _vpts = 0, _apts = 0;
-    int _ach = 0;
     bool _header_written = false;
-    std::vector<std::vector<uint8_t>> _pending_data;
-    std::vector<int> _pending_idx;
-    int _fps_num = 30, _fps_den = 1, _sample_rate = 48000;
+    int _fps_num = 30, _fps_den = 1, _sample_rate = 48000, _ach = 2;
+    int64_t _vpts = 0, _apts = 0;
 };
 
 static task<void> ffmpeg_session(net::io_context &ctx, ws_ptr ws) {
@@ -798,7 +782,6 @@ const cam=document.getElementById('cam');
 let unmuted=false;
 function L(m){log.textContent+=m+'\n';log.scrollTop=log.scrollHeight}
 function T(s){var d=new Date();return d.getHours()+':'+d.getMinutes()+':'+d.getSeconds()+'.'+d.getMilliseconds()+' '+s;}
-// One-time click anywhere to unmute (Chrome autoplay policy)
 document.addEventListener('click',()=>{
  if(!unmuted&&v.srcObject){v.muted=false;unmuted=true;L(T('audio unmuted'));}
 });

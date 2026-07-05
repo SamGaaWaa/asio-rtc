@@ -271,7 +271,14 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
     std::unordered_map<uint32_t, _remote_stream_stats> _stream_stats{};
     std::unordered_map<uint8_t, sdp_codec> _pt_codec_map{};
 
-    void _rebuild_pt_map();
+    struct _pt_recv_entry {
+        std::shared_ptr<rtp_receiver> receiver;
+        std::shared_ptr<media_track_impl> track;
+        std::string codec_name;
+    };
+    std::unordered_map<uint8_t, _pt_recv_entry> _pt_receiver_map{};
+
+    void _rebuild_pt_maps();
     const sdp_codec *_find_codec(uint8_t pt) const;
 
     std::string _transport_stats_id{};

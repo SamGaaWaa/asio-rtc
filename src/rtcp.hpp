@@ -39,6 +39,7 @@ struct rtcp_packet {
     uint8_t report_count = 0;
     uint8_t type = 0;
     uint32_t ssrc = 0;
+    uint32_t media_ssrc = 0;
 
     uint64_t ntp_timestamp = 0;
     uint32_t rtp_timestamp = 0;

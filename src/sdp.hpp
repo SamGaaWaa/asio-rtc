@@ -55,6 +55,8 @@ struct sdp_media {
     std::vector<sdp_rtcp_fb> rtcp_fbs;
     std::vector<std::string> ssrcs;
     std::vector<std::string> msids;
+    std::vector<std::string> rids;
+    std::string simulcast;
 
     std::string conn_nettype;
     std::string conn_addrtype;

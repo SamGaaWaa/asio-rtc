@@ -153,8 +153,10 @@ class OpusDecoderImpl : public decoder {
            uint32_t timestamp) override {
         std::unique_ptr<AVPacket, void(*)(AVPacket*)> pkt(
             av_packet_alloc(), +[](AVPacket *p) { av_packet_free(&p); });
-        pkt->data = const_cast<uint8_t *>(rtp_payload.data());
-        pkt->size = static_cast<int>(rtp_payload.size());
+        if (av_new_packet(pkt.get(),
+                           static_cast<int>(rtp_payload.size())) < 0)
+            return {};
+        std::memcpy(pkt->data, rtp_payload.data(), rtp_payload.size());
         pkt->pts = timestamp;
 
         int ret = avcodec_send_packet(_ctx, pkt.get());
@@ -202,7 +204,32 @@ class OpusDecoderImpl : public decoder {
                     std::memcpy(mf.data.data(), f->data[0], data_size);
                 }
             } else {
-                // Float or other format — skip, needs swr_convert
+                // Convert FLT/FLTP → S16
+                int samples = f->nb_samples * channels;
+                mf.data.resize(samples * 2);
+                auto *s16 = reinterpret_cast<int16_t *>(mf.data.data());
+                if (planar) {
+                    for (int ch = 0; ch < channels; ++ch) {
+                        auto *flt = reinterpret_cast<float *>(
+                            f->data[ch]);
+                        for (int s = 0; s < f->nb_samples; ++s) {
+                            float v = flt[s] * 32767.0f;
+                            if (v > 32767.0f) v = 32767.0f;
+                            if (v < -32768.0f) v = -32768.0f;
+                            s16[s * channels + ch] =
+                                static_cast<int16_t>(v);
+                        }
+                    }
+                } else {
+                    auto *flt = reinterpret_cast<float *>(
+                        f->data[0]);
+                    for (int i = 0; i < samples; ++i) {
+                        float v = flt[i] * 32767.0f;
+                        if (v > 32767.0f) v = 32767.0f;
+                        if (v < -32768.0f) v = -32768.0f;
+                        s16[i] = static_cast<int16_t>(v);
+                    }
+                }
             }
 
             frames.push_back(std::move(mf));

@@ -78,16 +78,16 @@ std::optional<rtp::rtp_packet> jitter_buffer::pop_frame() {
         return std::nullopt;
     }
 
-    // For video: if we reached end of buffer with only one entry, we may have
-    // only the first fragment of a multi-packet frame.  Wait for more packets
-    // unless this is a gap (higher seq) or the packet is old.
-    if (_is_video && it == _sorted.end() &&
-        next_expected == _next_extended_seq + 1) {
+    // For video: if we reached end of buffer, we may have only partial
+    // fragments of a multi-packet frame.  Wait for more packets via timeout.
+    if (_is_video && it == _sorted.end()) {
         auto now = std::chrono::steady_clock::now();
-        if (!_gap_start)
-            _gap_start = now;
-        if (now - *_gap_start < _max_delay / 2)
+        if (!_video_wait_start)
+            _video_wait_start = now;
+        if (now - *_video_wait_start < _max_delay / 2)
             return std::nullopt;
+    } else {
+        _video_wait_start.reset();
     }
 
     // Frame is complete — concatenate all payloads
@@ -116,6 +116,7 @@ void jitter_buffer::reset() {
     _next_extended_seq = 0;
     _first_packet = true;
     _gap_start.reset();
+    _video_wait_start.reset();
 }
 
 } // namespace asiortc

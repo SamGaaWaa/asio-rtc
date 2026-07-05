@@ -29,6 +29,7 @@ class jitter_buffer {
     bool _first_packet = true;
     std::chrono::milliseconds _max_delay;
     std::optional<std::chrono::steady_clock::time_point> _gap_start;
+    std::optional<std::chrono::steady_clock::time_point> _video_wait_start;
     bool _is_video = false;
 };
 

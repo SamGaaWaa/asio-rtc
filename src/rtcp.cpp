@@ -163,6 +163,23 @@ std::optional<rtcp_packet> rtcp_packet::parse(const void *data,
         }
         break;
     }
+    case packet_type::RTPFB:
+    case packet_type::PSFB: {
+        if (total < offset + 8) return {};
+        // sender_ssrc at offset, ignored
+        pkt.media_ssrc =
+            asioice::binary::read_big<uint32_t>(ptr + offset + 4);
+        offset += 8;
+        std::size_t payload_len = total - offset;
+        if (pkt.padding && payload_len > 0) {
+            uint8_t pad_len = ptr[total - 1];
+            if (pad_len == 0 || pad_len > payload_len) return {};
+            payload_len -= pad_len;
+        }
+        if (payload_len > 0)
+            pkt.payload.assign(ptr + offset, ptr + offset + payload_len);
+        break;
+    }
     case packet_type::BYE:
     case packet_type::SDES:
     case packet_type::APP: {

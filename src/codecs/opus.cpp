@@ -10,7 +10,7 @@ extern "C" {
 #include <cstring>
 
 #include "asiortc/media_track.hpp"
-#include "base.hpp"
+#include "asiortc/codecs/base.hpp"
 
 namespace asiortc::codecs {
 
@@ -48,7 +48,7 @@ class OpusEncoderImpl : public encoder {
             _init_context();
         }
 
-        std::unique_ptr<AVFrame, void(*)(AVFrame*)> f(
+        std::unique_ptr<AVFrame, void (*)(AVFrame *)> f(
             av_frame_alloc(), +[](AVFrame *f) { av_frame_free(&f); });
         f->format = _ctx->sample_fmt;
         f->nb_samples = _frame_samples;
@@ -71,7 +71,7 @@ class OpusEncoderImpl : public encoder {
         if (ret < 0)
             return {{}, 0};
 
-        std::unique_ptr<AVPacket, void(*)(AVPacket*)> pkt(
+        std::unique_ptr<AVPacket, void (*)(AVPacket *)> pkt(
             av_packet_alloc(), +[](AVPacket *p) { av_packet_free(&p); });
         std::vector<uint8_t> encoded;
         int64_t last_pts = AV_NOPTS_VALUE;
@@ -86,8 +86,7 @@ class OpusEncoderImpl : public encoder {
             av_packet_unref(pkt.get());
         }
 
-        uint32_t rtp_ts =
-            to_rtp_timestamp(last_pts, _ctx->time_base, 48000);
+        uint32_t rtp_ts = to_rtp_timestamp(last_pts, _ctx->time_base, 48000);
 
         if (encoded.empty())
             return {{}, 0};
@@ -148,13 +147,11 @@ class OpusDecoderImpl : public decoder {
             avcodec_free_context(&_ctx);
     }
 
-    std::vector<media_frame>
-    decode(const std::vector<uint8_t> &rtp_payload,
-           uint32_t timestamp) override {
-        std::unique_ptr<AVPacket, void(*)(AVPacket*)> pkt(
+    std::vector<media_frame> decode(const std::vector<uint8_t> &rtp_payload,
+                                    uint32_t timestamp) override {
+        std::unique_ptr<AVPacket, void (*)(AVPacket *)> pkt(
             av_packet_alloc(), +[](AVPacket *p) { av_packet_free(&p); });
-        if (av_new_packet(pkt.get(),
-                           static_cast<int>(rtp_payload.size())) < 0)
+        if (av_new_packet(pkt.get(), static_cast<int>(rtp_payload.size())) < 0)
             return {};
         std::memcpy(pkt->data, rtp_payload.data(), rtp_payload.size());
         pkt->pts = timestamp;
@@ -164,7 +161,7 @@ class OpusDecoderImpl : public decoder {
             return {};
 
         std::vector<media_frame> frames;
-        std::unique_ptr<AVFrame, void(*)(AVFrame*)> f(
+        std::unique_ptr<AVFrame, void (*)(AVFrame *)> f(
             av_frame_alloc(), +[](AVFrame *f) { av_frame_free(&f); });
         while (true) {
             ret = avcodec_receive_frame(_ctx, f.get());
@@ -181,8 +178,7 @@ class OpusDecoderImpl : public decoder {
             mf.sample_rate = f->sample_rate;
             mf.channels = f->ch_layout.nb_channels;
 
-            AVSampleFormat actual_fmt =
-                static_cast<AVSampleFormat>(f->format);
+            AVSampleFormat actual_fmt = static_cast<AVSampleFormat>(f->format);
             bool planar = av_sample_fmt_is_planar(actual_fmt);
             int channels = mf.channels;
 
@@ -195,11 +191,10 @@ class OpusDecoderImpl : public decoder {
                 if (planar) {
                     for (int ch = 0; ch < channels; ++ch)
                         for (int s = 0; s < f->nb_samples; ++s)
-                            std::memcpy(
-                                mf.data.data() +
-                                    (s * channels + ch) * sample_size,
-                                f->data[ch] + s * sample_size,
-                                sample_size);
+                            std::memcpy(mf.data.data() +
+                                            (s * channels + ch) * sample_size,
+                                        f->data[ch] + s * sample_size,
+                                        sample_size);
                 } else {
                     std::memcpy(mf.data.data(), f->data[0], data_size);
                 }
@@ -210,23 +205,24 @@ class OpusDecoderImpl : public decoder {
                 auto *s16 = reinterpret_cast<int16_t *>(mf.data.data());
                 if (planar) {
                     for (int ch = 0; ch < channels; ++ch) {
-                        auto *flt = reinterpret_cast<float *>(
-                            f->data[ch]);
+                        auto *flt = reinterpret_cast<float *>(f->data[ch]);
                         for (int s = 0; s < f->nb_samples; ++s) {
                             float v = flt[s] * 32767.0f;
-                            if (v > 32767.0f) v = 32767.0f;
-                            if (v < -32768.0f) v = -32768.0f;
-                            s16[s * channels + ch] =
-                                static_cast<int16_t>(v);
+                            if (v > 32767.0f)
+                                v = 32767.0f;
+                            if (v < -32768.0f)
+                                v = -32768.0f;
+                            s16[s * channels + ch] = static_cast<int16_t>(v);
                         }
                     }
                 } else {
-                    auto *flt = reinterpret_cast<float *>(
-                        f->data[0]);
+                    auto *flt = reinterpret_cast<float *>(f->data[0]);
                     for (int i = 0; i < samples; ++i) {
                         float v = flt[i] * 32767.0f;
-                        if (v > 32767.0f) v = 32767.0f;
-                        if (v < -32768.0f) v = -32768.0f;
+                        if (v > 32767.0f)
+                            v = 32767.0f;
+                        if (v < -32768.0f)
+                            v = -32768.0f;
                         s16[i] = static_cast<int16_t>(v);
                     }
                 }

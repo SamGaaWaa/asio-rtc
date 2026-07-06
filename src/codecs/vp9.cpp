@@ -13,7 +13,7 @@ extern "C" {
 #include <iostream>
 
 #include "asiortc/media_track.hpp"
-#include "base.hpp"
+#include "asiortc/codecs/base.hpp"
 #include "vpx_descriptor.hpp"
 
 namespace asiortc::codecs {
@@ -46,14 +46,13 @@ class Vp9EncoderImpl : public encoder {
 
     std::pair<std::vector<std::vector<uint8_t>>, uint32_t>
     encode(const media_frame &frame, bool force_keyframe) override {
-        if (!_ctx || _width != frame.width ||
-            _height != frame.height) {
+        if (!_ctx || _width != frame.width || _height != frame.height) {
             _width = frame.width;
             _height = frame.height;
             _init_context();
         }
 
-        std::unique_ptr<AVFrame, void(*)(AVFrame*)> f(
+        std::unique_ptr<AVFrame, void (*)(AVFrame *)> f(
             av_frame_alloc(), +[](AVFrame *f) { av_frame_free(&f); });
         if (!f)
             throw std::runtime_error{"av_frame_alloc failed"};
@@ -61,11 +60,10 @@ class Vp9EncoderImpl : public encoder {
         f->width = _ctx->width;
         f->height = _ctx->height;
 
-        if (av_image_fill_arrays(f->data, f->linesize,
-                                  frame.data.data(),
-                                  static_cast<AVPixelFormat>(f->format),
-                                  f->width, f->height, 1) < 0) {
-            ICE_IN_DEBUG{ std::cerr << "av_image_fill_arrays failed\n"; }
+        if (av_image_fill_arrays(f->data, f->linesize, frame.data.data(),
+                                 static_cast<AVPixelFormat>(f->format),
+                                 f->width, f->height, 1) < 0) {
+            ICE_IN_DEBUG { std::cerr << "av_image_fill_arrays failed\n"; }
             throw std::runtime_error{"av_image_fill_arrays failed"};
         }
 
@@ -79,7 +77,7 @@ class Vp9EncoderImpl : public encoder {
         if (ret < 0)
             return {{}, 0};
 
-        std::unique_ptr<AVPacket, void(*)(AVPacket*)> pkt(
+        std::unique_ptr<AVPacket, void (*)(AVPacket *)> pkt(
             av_packet_alloc(), +[](AVPacket *p) { av_packet_free(&p); });
         if (!pkt)
             throw std::runtime_error{"av_packet_alloc failed"};
@@ -92,8 +90,7 @@ class Vp9EncoderImpl : public encoder {
             if (ret < 0)
                 break;
             last_pts = pkt->pts;
-            encoded.insert(encoded.end(), pkt->data,
-                           pkt->data + pkt->size);
+            encoded.insert(encoded.end(), pkt->data, pkt->data + pkt->size);
             av_packet_unref(pkt.get());
         }
         if (encoded.empty())
@@ -164,8 +161,7 @@ class Vp9EncoderImpl : public encoder {
             std::vector<uint8_t> p;
             p.reserve(dbytes.size() + chunk);
             p.insert(p.end(), dbytes.begin(), dbytes.end());
-            p.insert(p.end(), buf.begin() + off,
-                     buf.begin() + off + chunk);
+            p.insert(p.end(), buf.begin() + off, buf.begin() + off + chunk);
             payloads.push_back(std::move(p));
             desc.partition_start = false;
             off += chunk;
@@ -191,16 +187,14 @@ class Vp9DecoderImpl : public decoder {
             avcodec_free_context(&_ctx);
     }
 
-    std::vector<media_frame>
-    decode(const std::vector<uint8_t> &rtp_payload,
-           uint32_t timestamp) override {
+    std::vector<media_frame> decode(const std::vector<uint8_t> &rtp_payload,
+                                    uint32_t timestamp) override {
         if (rtp_payload.empty())
             return {};
 
-        std::unique_ptr<AVPacket, void(*)(AVPacket*)> pkt(
+        std::unique_ptr<AVPacket, void (*)(AVPacket *)> pkt(
             av_packet_alloc(), +[](AVPacket *p) { av_packet_free(&p); });
-        if (av_new_packet(pkt.get(),
-                           static_cast<int>(rtp_payload.size())) < 0)
+        if (av_new_packet(pkt.get(), static_cast<int>(rtp_payload.size())) < 0)
             return {};
         std::memcpy(pkt->data, rtp_payload.data(), rtp_payload.size());
         pkt->pts = timestamp;
@@ -210,7 +204,7 @@ class Vp9DecoderImpl : public decoder {
             return {};
 
         std::vector<media_frame> frames;
-        std::unique_ptr<AVFrame, void(*)(AVFrame*)> f(
+        std::unique_ptr<AVFrame, void (*)(AVFrame *)> f(
             av_frame_alloc(), +[](AVFrame *f) { av_frame_free(&f); });
         while (true) {
             ret = avcodec_receive_frame(_ctx, f.get());
@@ -228,13 +222,11 @@ class Vp9DecoderImpl : public decoder {
             mf.height = f->height;
 
             int buf_size = av_image_get_buffer_size(
-                static_cast<AVPixelFormat>(f->format), f->width,
-                f->height, 1);
+                static_cast<AVPixelFormat>(f->format), f->width, f->height, 1);
             mf.data.resize(buf_size);
-            av_image_copy_to_buffer(mf.data.data(), buf_size,
-                                    f->data, f->linesize,
-                                    static_cast<AVPixelFormat>(f->format),
-                                    f->width, f->height, 1);
+            av_image_copy_to_buffer(
+                mf.data.data(), buf_size, f->data, f->linesize,
+                static_cast<AVPixelFormat>(f->format), f->width, f->height, 1);
 
             frames.push_back(std::move(mf));
             av_frame_unref(f.get());

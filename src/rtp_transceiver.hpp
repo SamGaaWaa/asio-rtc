@@ -6,7 +6,8 @@
 #include <vector>
 
 #include "any_sender.hpp"
-#include "codecs/base.hpp"
+#include "asiortc/rtp_parameters.hpp"
+#include "asiortc/codecs/base.hpp"
 #include "rtp_stream.hpp"
 #include "sdp.hpp"
 
@@ -16,32 +17,6 @@ namespace asiortc {
 
 struct connection_impl;
 struct media_track;
-
-struct rtp_encoding_parameters {
-    bool active = true;
-    std::optional<uint32_t> max_bitrate;
-    double scale_resolution_down_by = 1.0;
-    std::string scalability_mode;
-    std::string rid;
-};
-
-struct rtp_rtcp_parameters {
-    std::string cname;
-    bool reduced_size = false;
-};
-
-struct rtp_send_parameters {
-    std::optional<std::string> transaction_id;
-    std::vector<rtp_encoding_parameters> encodings;
-    std::vector<sdp_extmap> header_extensions;
-    rtp_rtcp_parameters rtcp;
-};
-
-struct rtp_receive_parameters {
-    std::vector<sdp_extmap> header_extensions;
-    rtp_rtcp_parameters rtcp;
-};
-
 struct rtp_transceiver;
 
 struct rtp_sender : std::enable_shared_from_this<rtp_sender> {
@@ -141,12 +116,6 @@ struct rtp_receiver : std::enable_shared_from_this<rtp_receiver> {
     rtp_receive_parameters _parameters{};
     std::optional<any_sender<void>> _rtcp_loop{};
     std::shared_ptr<codecs::decoder> _decoder{};
-};
-
-struct rtp_transceiver_init {
-    sdp_direction direction;
-    std::vector<rtp_encoding_parameters> send_encodings;
-    std::vector<std::string> streams;
 };
 
 std::vector<sdp_codec> default_video_codecs();

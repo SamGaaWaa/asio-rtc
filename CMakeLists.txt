@@ -8,6 +8,13 @@ option(ASIORTC_TEST "Build test" ON)
 
 set(CMAKE_CXX_STANDARD 23)
 
+if(ASIORTC_USE_STANDALONE_ASIO)
+    set(__ASIORTC_USE_STANDALONE_ASIO 1)
+else()
+    set(__ASIORTC_USE_STANDALONE_ASIO 0)
+endif()
+configure_file("${CMAKE_CURRENT_SOURCE_DIR}/include/asiortc/config.hpp.in" "${CMAKE_CURRENT_SOURCE_DIR}/include/asiortc/config.hpp")
+
 find_package(OpenSSL 3 REQUIRED)
 
 set(Boost_DEBUG ON)
@@ -31,9 +38,11 @@ set(CRYPTO_LIBRARY openssl)
 set(LIBSRTP_TEST_APPS OFF)
 add_subdirectory(third_party/libsrtp)
 
-file(GLOB RTC_SRC_FILES 
-    src/asiortc.cpp
+ file(GLOB RTC_SRC_FILES 
+    src/candidate.cpp
+    src/peer_connection.cpp
     src/connection_impl.cpp
+    src/rtp_interfaces.cpp
     src/srtp_transport.cpp
     src/rtp.cpp
     src/rtcp.cpp

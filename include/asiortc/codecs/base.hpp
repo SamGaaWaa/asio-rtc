@@ -6,9 +6,7 @@
 #include <utility>
 #include <vector>
 
-namespace asiortc {
-struct media_frame;
-} // namespace asiortc
+#include "asiortc/media_frame.hpp"
 
 namespace asiortc::codecs {
 

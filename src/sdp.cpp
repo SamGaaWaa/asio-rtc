@@ -10,8 +10,6 @@
 
 namespace asiortc {
 
-namespace {
-
 std::vector<std::string_view> split_lines(std::string_view s) {
     std::vector<std::string_view> lines;
     while (!s.empty()) {
@@ -28,7 +26,7 @@ std::vector<std::string_view> split_lines(std::string_view s) {
         s.remove_prefix(nl + 1);
     }
     return lines;
-}
+} // anonymous namespace
 
 std::pair<std::string_view, std::string_view>
 split_attr(std::string_view attr) {
@@ -272,8 +270,6 @@ void apply_media_attr(sdp_media &media, std::string_view name,
         media.attributes.emplace_back(std::string(name), vstr);
     }
 }
-
-} // namespace
 
 session_description parse_sdp(std::string_view sdp_text, std::string type) {
     session_description session;
@@ -553,6 +549,34 @@ std::string session_description::to_string() const {
     }
 
     return out;
+}
+
+sdp_direction negotiate_direction(sdp_direction local,
+                                  sdp_direction remote) noexcept {
+    using enum sdp_direction;
+    if (local == inactive || remote == inactive)
+        return inactive;
+    if (local == sendrecv)
+        return remote;
+    if (local == sendonly)
+        return (remote == recvonly || remote == sendrecv) ? sendonly : inactive;
+    if (local == recvonly)
+        return (remote == sendonly || remote == sendrecv) ? recvonly : inactive;
+    return inactive;
+}
+
+const char *direction_str(sdp_direction d) {
+    switch (d) {
+    case sdp_direction::sendrecv:
+        return "sendrecv";
+    case sdp_direction::sendonly:
+        return "sendonly";
+    case sdp_direction::recvonly:
+        return "recvonly";
+    case sdp_direction::inactive:
+        return "inactive";
+    }
+    return "sendrecv";
 }
 
 } // namespace asiortc

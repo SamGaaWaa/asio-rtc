@@ -1,0 +1,14 @@
+#pragma once
+
+#define ASIORTC_USE_STANDALONE_ASIO @__ASIORTC_USE_STANDALONE_ASIO@
+
+#if ASIORTC_USE_STANDALONE_ASIO
+    namespace asiortc {
+        using error_code = std::error_code;
+    }
+#else
+    #include <boost/system/error_code.hpp>
+    namespace asiortc {
+        using error_code = boost::system::error_code;
+    }
+#endif

@@ -94,7 +94,7 @@ static bool ice_options_trickle_from(const session_description &sdp) {
     return false;
 }
 
-asioice::task<void>
+asiortc::task<void>
 connection_impl::_sender_send_loop(std::shared_ptr<rtp_sender> sender,
                                    std::shared_ptr<srtp_transport_type> srtp) {
     asioice::utils::scope_guard on_exit([]() noexcept {
@@ -296,7 +296,7 @@ connection_impl::connection_impl(connection_impl::executor_type ex,
         std::bind_front(&connection_impl::do_on_candidates, this));
 }
 
-asioice::task<void> connection_impl::apply_descriptions() {
+asiortc::task<void> connection_impl::apply_descriptions() {
     if (_roles_set || !_local_desc || !_remote_desc)
         co_return;
     _roles_set = true;
@@ -439,7 +439,7 @@ const sdp_codec *connection_impl::_find_codec(uint8_t pt) const {
     return it != _pt_codec_map.end() ? &it->second : nullptr;
 }
 
-asioice::task<void> connection_impl::do_connect() {
+asiortc::task<void> connection_impl::do_connect() {
     _connection_state = connection_state_t::connecting;
     asioice::utils::scope_guard on_exit([this]() noexcept {
         if (_connection_state == connection_state_t::connecting)
@@ -537,7 +537,7 @@ asioice::task<void> connection_impl::do_connect() {
     _connection_state = connection_state_t::connected;
 }
 
-asioice::task<void>
+asiortc::task<void>
 connection_impl::set_local_description(session_description desc) {
     switch (_signaling_state.get()) {
     case signaling_state_t::have_local_offer:
@@ -577,7 +577,7 @@ connection_impl::set_local_description(session_description desc) {
     start_connecting();
 }
 
-asioice::task<void>
+asiortc::task<void>
 connection_impl::set_remote_description(session_description desc) {
     switch (_signaling_state.get()) {
     case signaling_state_t::have_remote_offer:
@@ -776,7 +776,7 @@ void connection_impl::register_decoder(std::string name,
     _decoder_registry[std::move(name)] = std::move(factory);
 }
 
-asioice::task<session_description> connection_impl::create_offer() {
+asiortc::task<session_description> connection_impl::create_offer() {
     auto fp = _cert.get_fingerprint(asioice::ssl::hash_algorithm::sha256);
 
     session_description offer;
@@ -843,7 +843,7 @@ asioice::task<session_description> connection_impl::create_offer() {
     co_return offer;
 }
 
-asioice::task<session_description> connection_impl::create_answer() {
+asiortc::task<session_description> connection_impl::create_answer() {
     if (!_remote_desc ||
         _signaling_state != signaling_state_t::have_remote_offer) {
         throw std::runtime_error("set_remote_description must be called first");
@@ -989,7 +989,7 @@ connection_impl::add_transceiver(std::shared_ptr<media_track> track,
     return t;
 }
 
-asioice::task<void> connection_impl::_sender_rtcp_loop(
+asiortc::task<void> connection_impl::_sender_rtcp_loop(
     std::shared_ptr<rtp_sender> sender,
     std::shared_ptr<connection_impl::srtp_transport_type> srtp) {
     asioice::utils::scope_guard on_exit([]() noexcept {
@@ -1032,7 +1032,7 @@ asioice::task<void> connection_impl::_sender_rtcp_loop(
     }
 }
 
-asioice::task<void> connection_impl::_receiver_rtcp_loop(
+asiortc::task<void> connection_impl::_receiver_rtcp_loop(
     std::shared_ptr<rtp_receiver> receiver,
     std::shared_ptr<connection_impl::srtp_transport_type> srtp) {
     asioice::utils::scope_guard on_exit([]() noexcept {
@@ -1227,7 +1227,7 @@ void connection_impl::do_on_data_channel(
     }
 }
 
-asioice::task<bool> data_channel::open() {
+asiortc::task<bool> data_channel::open() {
     if (_channel)
         co_return true;
     auto conn = _conn.lock();
@@ -1612,7 +1612,7 @@ void connection_impl::sync_rtp_rtcp_sender::send_rtp(
     _pending_rtp.push(std::move(data));
     if (!_send_rtp_task)
         _send_rtp_task = stdexec::spawn_future(
-            [](auto srtp, auto &q) -> asioice::task<void> {
+            [](auto srtp, auto &q) -> asiortc::task<void> {
                 asioice::utils::scope_guard on_exit([]() noexcept {
                     ICE_IN_DEBUG {
                         std::cout
@@ -1639,7 +1639,7 @@ void connection_impl::sync_rtp_rtcp_sender::send_rtcp(
     _pending_rtcp.push(std::move(data));
     if (!_send_rtcp_task)
         _send_rtcp_task = stdexec::spawn_future(
-            [](auto srtp, auto &q) -> asioice::task<void> {
+            [](auto srtp, auto &q) -> asiortc::task<void> {
                 asioice::utils::scope_guard on_exit([]() noexcept {
                     ICE_IN_DEBUG {
                         std::cout

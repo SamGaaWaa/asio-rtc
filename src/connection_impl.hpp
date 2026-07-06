@@ -10,7 +10,7 @@
 #include "asioice/dtls_transport.hpp"
 #include "asioice/ssl/dtls_config.hpp"
 #include "asioice/task.hpp"
-#include "asiortc/connection.hpp"
+#include "asiortc/peer_connection.hpp"
 #include "asiortc/media_track.hpp"
 #include "asiortc/rtc_stats.hpp"
 #include "data_channel.hpp"
@@ -167,8 +167,8 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
         return nullptr;
     }
 
-    asioice::task<session_description> create_offer();
-    asioice::task<session_description> create_answer();
+    asiortc::task<session_description> create_offer();
+    asiortc::task<session_description> create_answer();
 
     std::shared_ptr<asiortc::data_channel>
     create_data_channel(std::string label,
@@ -184,8 +184,8 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
     const auto &transceivers() const noexcept { return _transceivers; }
     auto &transceivers() noexcept { return _transceivers; }
 
-    asioice::task<void> set_local_description(session_description desc);
-    asioice::task<void> set_remote_description(session_description desc);
+    asiortc::task<void> set_local_description(session_description desc);
+    asiortc::task<void> set_remote_description(session_description desc);
 
     auto add_ice_candidate(asioice::candidate c) {
         return _agent.add_remote_candidate(std::move(c));
@@ -228,24 +228,24 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
         std::optional<any_sender<void>> _send_rtp_task{};
     };
 
-    asioice::task<void> apply_descriptions();
+    asiortc::task<void> apply_descriptions();
     void start_gathering();
     void do_on_candidates(std::span<const asioice::candidate>);
     void start_connecting();
-    asioice::task<void> do_connect();
+    asiortc::task<void> do_connect();
     static ice_connection_state_t
     to_ice_connection_state(asioice::agent_state_t s) noexcept;
     void do_on_data_channel(std::shared_ptr<data_channel_type> ch);
     void do_on_rtp_rtcp_packet(asioice::io_buffer_ptr);
     bool do_on_new_ssrc(uint32_t ssrc, std::span<const uint8_t> data);
     void _start_sender_loops();
-    asioice::task<void>
+    asiortc::task<void>
     _sender_send_loop(std::shared_ptr<rtp_sender> sender,
                       std::shared_ptr<srtp_transport_type> srtp);
-    asioice::task<void>
+    asiortc::task<void>
     _sender_rtcp_loop(std::shared_ptr<rtp_sender> sender,
                       std::shared_ptr<srtp_transport_type> srtp);
-    asioice::task<void>
+    asiortc::task<void>
     _receiver_rtcp_loop(std::shared_ptr<rtp_receiver> receiver,
                         std::shared_ptr<srtp_transport_type> srtp);
 

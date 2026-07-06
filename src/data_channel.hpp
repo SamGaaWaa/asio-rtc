@@ -46,7 +46,7 @@ struct data_channel {
         return _options.priority;
     }
 
-    asioice::task<bool> open();
+    asiortc::task<bool> open();
 
     auto send_text(std::string_view text) { return _channel->send_text(text); }
     auto send_binary(std::span<const uint8_t> data) {

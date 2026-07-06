@@ -4,3 +4,4 @@ boost_clang/
 boost*
 aiortc/
 test.webm
+include/asiortc/config.hpp

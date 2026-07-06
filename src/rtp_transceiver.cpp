@@ -7,20 +7,6 @@
 
 namespace asiortc {
 
-static sdp_direction negotiate_direction(sdp_direction local,
-                                         sdp_direction remote) noexcept {
-    using enum sdp_direction;
-    if (local == inactive || remote == inactive)
-        return inactive;
-    if (local == sendrecv)
-        return remote;
-    if (local == sendonly)
-        return (remote == recvonly || remote == sendrecv) ? sendonly : inactive;
-    if (local == recvonly)
-        return (remote == sendonly || remote == sendrecv) ? recvonly : inactive;
-    return inactive;
-}
-
 std::vector<sdp_codec> default_video_codecs() {
     return {
         {96, "VP8", 90000, "", ""},
@@ -52,9 +38,7 @@ static std::string infer_media_type(const std::vector<sdp_codec> &codecs) {
     return "application";
 }
 
-rtp_sender::rtp_sender() {
-    _streams.push_back(std::make_shared<rtp_stream>());
-}
+rtp_sender::rtp_sender() { _streams.push_back(std::make_shared<rtp_stream>()); }
 
 void rtp_transceiver::apply_simulcast_to(sdp_media &m) const {
     if (send_encodings.size() < 2)
@@ -64,8 +48,7 @@ void rtp_transceiver::apply_simulcast_to(sdp_media &m) const {
         if (send_encodings[i].rid.empty())
             continue;
         std::string pt_str =
-            std::to_string(_codecs.empty() ? 0
-                                           : _codecs[0].payload_type);
+            std::to_string(_codecs.empty() ? 0 : _codecs[0].payload_type);
         m.rids.push_back(send_encodings[i].rid + " send pt=" + pt_str);
         if (!send_rids.empty())
             send_rids += ";";
@@ -200,11 +183,12 @@ sdp_media rtp_transceiver::to_answer_sdp_media(const sdp_media &remote) const {
                     !remote_codec.encoding_params.empty()) {
                     auto ap = remote_codec.encoding_params.find("apt=");
                     if (ap != std::string::npos) {
-                        int apt = std::stoi(
-                            std::string{remote_codec.encoding_params.substr(ap + 4)});
+                        int apt = std::stoi(std::string{
+                            remote_codec.encoding_params.substr(ap + 4)});
                         bool found = false;
                         for (auto pt : m.payload_types)
-                            if (pt == apt) found = true;
+                            if (pt == apt)
+                                found = true;
                         if (!found) {
                             used[j] = true;
                             continue;
@@ -235,12 +219,14 @@ sdp_media rtp_transceiver::to_answer_sdp_media(const sdp_media &remote) const {
                         // RTX: verify apt points to an accepted PT
                         auto ap = params.find("apt=");
                         if (ap != std::string::npos) {
-                            int apt = std::stoi(
-                                std::string{params.substr(ap + 4)});
+                            int apt =
+                                std::stoi(std::string{params.substr(ap + 4)});
                             bool found = false;
                             for (auto p : m.payload_types)
-                                if (p == apt) found = true;
-                            if (!found) break;
+                                if (p == apt)
+                                    found = true;
+                            if (!found)
+                                break;
                         }
                         m.fmtps.push_back(f);
                         break;
@@ -259,7 +245,8 @@ sdp_media rtp_transceiver::to_answer_sdp_media(const sdp_media &remote) const {
         if (!remote.rids.empty() && !send_encodings.empty()) {
             for (const auto &rid_line : remote.rids) {
                 auto ws = rid_line.find(' ');
-                if (ws == std::string::npos) continue;
+                if (ws == std::string::npos)
+                    continue;
                 auto rid = rid_line.substr(0, ws);
                 if (rid_line.find("recv ", ws) == std::string::npos)
                     continue; // only flip recv→send
@@ -267,13 +254,19 @@ sdp_media rtp_transceiver::to_answer_sdp_media(const sdp_media &remote) const {
                 // Check if local send_encodings has this rid
                 bool matched = false;
                 for (const auto &enc : send_encodings)
-                    if (enc.rid == rid) { matched = true; break; }
-                if (!matched) continue;
+                    if (enc.rid == rid) {
+                        matched = true;
+                        break;
+                    }
+                if (!matched)
+                    continue;
 
-                auto pt_str = _codecs.empty() ? "0"
-                    : std::to_string(_codecs[0].payload_type);
+                auto pt_str = _codecs.empty()
+                                  ? "0"
+                                  : std::to_string(_codecs[0].payload_type);
                 m.rids.push_back(rid + " send pt=" + pt_str);
-                if (!matched_rids.empty()) matched_rids += ";";
+                if (!matched_rids.empty())
+                    matched_rids += ";";
                 matched_rids += rid;
             }
             if (!matched_rids.empty())
@@ -282,18 +275,17 @@ sdp_media rtp_transceiver::to_answer_sdp_media(const sdp_media &remote) const {
 
         // SSRC: one per matched simulcast RID, or just _streams[0]
         if (!matched_rids.empty() && _sender->_streams.size() > 1) {
-            for (size_t i = 0; i < m.rids.size() && i < _sender->_streams.size(); ++i) {
+            for (size_t i = 0;
+                 i < m.rids.size() && i < _sender->_streams.size(); ++i) {
                 auto ssrc = _sender->_streams[i]->ssrc;
-                m.ssrcs.push_back(std::to_string(ssrc) +
-                                  " cname:asiortc");
+                m.ssrcs.push_back(std::to_string(ssrc) + " cname:asiortc");
             }
         } else if (!_sender->_streams.empty()) {
             auto ssrc = _sender->_streams[0]->ssrc;
-            m.ssrcs.push_back(std::to_string(ssrc) +
-                              " cname:asiortc");
+            m.ssrcs.push_back(std::to_string(ssrc) + " cname:asiortc");
             for (const auto &ms : _sender->_msids)
-                m.ssrcs.push_back(std::to_string(ssrc) +
-                                  " msid:" + ms + " " + _mid);
+                m.ssrcs.push_back(std::to_string(ssrc) + " msid:" + ms + " " +
+                                  _mid);
         }
     }
 

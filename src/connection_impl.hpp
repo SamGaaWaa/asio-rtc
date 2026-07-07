@@ -277,6 +277,9 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
         std::string codec_name;
     };
     std::unordered_map<uint8_t, _pt_recv_entry> _pt_receiver_map{};
+    std::unordered_map<std::string, std::shared_ptr<media_track_impl>>
+        _mid_track_map{};
+    int _mid_ext_id = 0;
 
     void _rebuild_pt_maps();
     const sdp_codec *_find_codec(uint8_t pt) const;

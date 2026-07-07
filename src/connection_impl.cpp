@@ -415,9 +415,26 @@ static std::vector<uint8_t> depayload(const std::string &codec_name,
     return payload;
 }
 
+static std::optional<uint32_t> parse_ssrc_value(std::string_view line) {
+    auto sp = line.find(' ');
+    auto s = (sp != std::string_view::npos) ? line.substr(0, sp) : line;
+    if (s.empty())
+        return std::nullopt;
+    uint32_t v = 0;
+    for (auto c : s) {
+        if (c < '0' || c > '9')
+            return std::nullopt;
+        v = v * 10 + static_cast<uint32_t>(c - '0');
+    }
+    return v;
+}
+
 void connection_impl::_rebuild_pt_maps() {
     _pt_codec_map.clear();
     _pt_receiver_map.clear();
+    _mid_track_map.clear();
+    _mid_ext_id = 0;
+
     for (const auto &t : _transceivers) {
         if (!t)
             continue;
@@ -427,9 +444,39 @@ void connection_impl::_rebuild_pt_maps() {
                  : nullptr;
         for (const auto &c : t->codecs()) {
             _pt_codec_map.emplace(c.payload_type, c);
-            if (recv && track)
+            if (recv && track) {
                 _pt_receiver_map.try_emplace(
                     c.payload_type, _pt_recv_entry{recv, track, c.name});
+                if (c.name != "rtx" && track->_decoder_codec_name.empty())
+                    track->_decoder_codec_name = c.name;
+            }
+        }
+
+        if (!t->mid().empty() && track)
+            _mid_track_map[t->mid()] = track;
+
+        if (_mid_ext_id == 0 && recv) {
+            for (const auto &e : recv->parameters().header_extensions) {
+                if (e.uri == "urn:ietf:params:rtp-hdrext:sdes:mid") {
+                    _mid_ext_id = e.id;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (_remote_desc) {
+        for (const auto &rm : _remote_desc->medias) {
+            if (rm.mid.empty() || rm.ssrcs.empty())
+                continue;
+            auto mit = _mid_track_map.find(rm.mid);
+            if (mit == _mid_track_map.end())
+                continue;
+            for (const auto &ssrc_line : rm.ssrcs) {
+                auto ssrc = parse_ssrc_value(ssrc_line);
+                if (ssrc)
+                    _ssrc_track_map.try_emplace(*ssrc, mit->second);
+            }
         }
     }
 }
@@ -1176,6 +1223,10 @@ void connection_impl::close() noexcept {
         t->stop();
     _transceivers.clear();
     _ssrc_track_map.clear();
+    _pt_codec_map.clear();
+    _pt_receiver_map.clear();
+    _mid_track_map.clear();
+    _mid_ext_id = 0;
 
     _local_desc.reset();
     _remote_desc.reset();
@@ -1340,6 +1391,8 @@ void connection_impl::do_on_rtp_rtcp_packet(asioice::io_buffer_ptr buf) {
     _rx_bytes += buf->size();
     auto pkt = rtp::rtp_packet::parse(buf->data(), buf->size());
     if (pkt) {
+        std::shared_ptr<media_track_impl> mid_track;
+
         if (!pkt->extension_data.empty()) {
             const auto &ext = pkt->extension_data;
             size_t off = 0;
@@ -1358,7 +1411,15 @@ void connection_impl::do_on_rtp_rtcp_packet(asioice::io_buffer_ptr buf) {
                     _twcc_recv.push_back(
                         {.transport_seq = tcc_seq,
                          .recv_time = std::chrono::steady_clock::now()});
-                    break;
+                }
+                if (_mid_ext_id > 0 &&
+                    id == static_cast<uint8_t>(_mid_ext_id) &&
+                    off + 1 + len <= ext.size()) {
+                    std::string mid(
+                        reinterpret_cast<const char *>(&ext[off + 1]), len);
+                    auto mit = _mid_track_map.find(mid);
+                    if (mit != _mid_track_map.end())
+                        mid_track = mit->second;
                 }
                 off += 1 + len;
             }
@@ -1430,13 +1491,23 @@ void connection_impl::do_on_rtp_rtcp_packet(asioice::io_buffer_ptr buf) {
             st.consecutive_lost = 0;
         }
 
-        auto it = _ssrc_track_map.find(pkt->ssrc);
-        if (it != _ssrc_track_map.end()) {
+        // Three-tier demux: MID -> SSRC -> PT
+        auto to_push = [&](std::shared_ptr<media_track_impl> track) {
             auto *codec = _find_codec(pkt->payload_type);
             if (!codec)
-                goto skip_push;
+                return;
 
-            // RTX: extract OSN, strip 2-byte prefix
+            bool is_new =
+                (_ssrc_track_map.find(pkt->ssrc) == _ssrc_track_map.end());
+            if (is_new)
+                _ssrc_track_map[pkt->ssrc] = track;
+
+            if (!track->_decoder && !track->_decoder_codec_name.empty()) {
+                auto dit = _decoder_registry.find(track->_decoder_codec_name);
+                if (dit != _decoder_registry.end())
+                    track->_decoder = dit->second();
+            }
+
             if (codec->name == "rtx" && pkt->payload.size() >= 2) {
                 pkt->sequence_number = asioice::binary::ntoh<uint16_t>(
                     *reinterpret_cast<const uint16_t *>(pkt->payload.data()));
@@ -1446,8 +1517,18 @@ void connection_impl::do_on_rtp_rtcp_packet(asioice::io_buffer_ptr buf) {
                 pkt->payload = depayload(codec->name, std::move(pkt->payload));
             }
 
-            it->second->push_frame(std::move(*pkt));
-        skip_push:;
+            track->push_frame(std::move(*pkt));
+        };
+
+        if (mid_track) {
+            to_push(mid_track);
+        } else if (auto it = _ssrc_track_map.find(pkt->ssrc);
+                   it != _ssrc_track_map.end()) {
+            to_push(it->second);
+        } else if (auto pt_it = _pt_receiver_map.find(pkt->payload_type);
+                   pt_it != _pt_receiver_map.end()) {
+            if (pt_it->second.codec_name != "rtx")
+                to_push(pt_it->second.track);
         }
     } else {
         // Handle compound RTCP
@@ -1580,25 +1661,8 @@ bool connection_impl::do_on_new_ssrc(uint32_t ssrc,
                                      std::span<const uint8_t> data) {
     auto pkt = rtp::rtp_packet::parse(data.data(), data.size());
     if (!pkt)
-        goto ssrc_done;
+        return false;
 
-    {
-        auto it = _pt_receiver_map.find(pkt->payload_type);
-        if (it == _pt_receiver_map.end())
-            goto ssrc_done;
-        if (it->second.codec_name == "rtx")
-            goto ssrc_done;
-
-        _ssrc_track_map[ssrc] = it->second.track;
-        auto &recv = it->second.receiver;
-        if (!recv->_decoder) {
-            auto dit = _decoder_registry.find(it->second.codec_name);
-            if (dit != _decoder_registry.end())
-                recv->_decoder = dit->second();
-        }
-    }
-
-ssrc_done:
     if (_on_new_ssrc_cb)
         return _on_new_ssrc_cb(ssrc, data);
     return true;

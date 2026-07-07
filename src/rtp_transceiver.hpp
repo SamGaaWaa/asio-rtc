@@ -97,9 +97,7 @@ struct rtp_receiver : std::enable_shared_from_this<rtp_receiver> {
 
     void set_track(std::shared_ptr<media_track> t) { _track = std::move(t); }
 
-    const std::shared_ptr<codecs::decoder> &decoder() const noexcept {
-        return _decoder;
-    }
+    const std::shared_ptr<codecs::decoder> &decoder() const noexcept;
 
     const rtp_receive_parameters &parameters() const noexcept {
         return _parameters;
@@ -115,7 +113,6 @@ struct rtp_receiver : std::enable_shared_from_this<rtp_receiver> {
     bool _stopped = false;
     rtp_receive_parameters _parameters{};
     std::optional<any_sender<void>> _rtcp_loop{};
-    std::shared_ptr<codecs::decoder> _decoder{};
 };
 
 std::vector<sdp_codec> default_video_codecs();

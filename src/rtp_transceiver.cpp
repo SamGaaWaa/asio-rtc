@@ -4,6 +4,7 @@
 #include <unordered_set>
 
 #include "connection_impl.hpp"
+#include "media_track_impl.hpp"
 
 namespace asiortc {
 
@@ -304,6 +305,15 @@ rtp_transceiver::~rtp_transceiver() noexcept {
         _sender->stop();
     if (_receiver)
         _receiver->stop();
+}
+
+const std::shared_ptr<codecs::decoder> &rtp_receiver::decoder() const noexcept {
+    if (_track) {
+        auto *mt = static_cast<media_track_impl *>(_track.get());
+        return mt->_decoder;
+    }
+    static const std::shared_ptr<codecs::decoder> empty;
+    return empty;
 }
 
 } // namespace asiortc

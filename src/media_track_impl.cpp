@@ -9,7 +9,8 @@ namespace asiortc {
 
 media_track_impl::media_track_impl(media_kind k, std::string track_id)
     : _kind{k}, _id{std::move(track_id)},
-      _jitter(std::chrono::milliseconds(500), k == media_kind::video) {}
+      _jitter(std::chrono::milliseconds(500), k == media_kind::video),
+      _clock_rate(k == media_kind::audio ? 48000u : 90000u) {}
 
 void media_track_impl::stop() { _state = track_state::ended; }
 
@@ -37,6 +38,14 @@ asiortc::task<std::optional<media_frame>> media_track_impl::recv() {
     mf.kind = _kind;
     mf.timestamp = pkt->timestamp;
     mf.data = std::move(pkt->payload);
+    mf.info = rtp_frame_info{
+        .rtp_timestamp = pkt->timestamp,
+        .ssrc = pkt->ssrc,
+        .clock_rate = _clock_rate,
+        .first_sequence_number = pkt->sequence_number,
+        .marker = static_cast<bool>(pkt->marker),
+        .receive_time = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())};
     co_return mf;
 }
 

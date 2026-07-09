@@ -4,8 +4,7 @@
 
 namespace asiortc {
 
-jitter_buffer::jitter_buffer(std::chrono::milliseconds max_delay,
-                             bool is_video)
+jitter_buffer::jitter_buffer(std::chrono::milliseconds max_delay, bool is_video)
     : _max_delay(max_delay), _is_video(is_video) {}
 
 uint32_t jitter_buffer::_extend_seq(uint16_t seq, uint32_t last_extended) {
@@ -16,10 +15,11 @@ uint32_t jitter_buffer::_extend_seq(uint16_t seq, uint32_t last_extended) {
 }
 
 void jitter_buffer::push(rtp::rtp_packet pkt) {
-    uint32_t extended = _extend_seq(pkt.sequence_number,
-                                    _next_extended_seq);
+    uint32_t extended = _extend_seq(pkt.sequence_number, _next_extended_seq);
 
     if (_first_packet) {
+        if (pkt.payload.empty())
+            return;
         _first_packet = false;
         _next_extended_seq = extended;
     }
@@ -101,8 +101,7 @@ std::optional<rtp::rtp_packet> jitter_buffer::pop_frame() {
     }
 
     rtp::rtp_packet assembled;
-    assembled.sequence_number =
-        static_cast<uint16_t>(_next_extended_seq);
+    assembled.sequence_number = static_cast<uint16_t>(_next_extended_seq);
     assembled.timestamp = ts;
     assembled.payload = std::move(joined);
 

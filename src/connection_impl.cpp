@@ -543,6 +543,7 @@ asiortc::task<void> connection_impl::do_connect() {
             _srtp_transport->on_rtp_rtcp_packet(
                 std::bind_front(&connection_impl::do_on_rtp_rtcp_packet, this));
             _start_sender_loops();
+            _start_nack_loop();
 
             for (const auto &t : _transceivers) {
                 auto receiver = t->receiver();
@@ -1176,6 +1177,58 @@ asiortc::task<void> connection_impl::_receiver_rtcp_loop(
     }
 }
 
+asiortc::task<void> connection_impl::_nack_loop() {
+    net::steady_timer timer(this->get_executor());
+    while (true) {
+        timer.expires_after(std::chrono::milliseconds(20));
+        auto ec = co_await timer.async_wait(asioice::utils::use_sender);
+        if (ec)
+            co_return;
+
+        auto now = std::chrono::steady_clock::now();
+        std::vector<uint32_t> empty_ssrcs;
+        for (auto &nack_entry : this->_nack_list) {
+            auto ssrc = nack_entry.first;
+            auto &entries = nack_entry.second;
+            std::erase_if(entries,
+                          [](const auto &e) { return e.retries >= 10; });
+
+            std::vector<uint16_t> batch;
+            for (auto it = entries.begin(); it != entries.end(); ++it) {
+                auto elapsed =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        now - it->last_sent);
+                if (elapsed.count() <
+                    static_cast<int64_t>(this->_current_rtt_ms)) {
+                    continue;
+                }
+                batch.push_back(it->sequence_number);
+                it->last_sent = now;
+                it->retries++;
+            }
+            if (entries.empty())
+                empty_ssrcs.push_back(ssrc);
+            if (!batch.empty()) {
+                auto nack_bytes =
+                    rtcp::rtcp_rtpfb{rtcp::packet_type::RTPFB_NACK, 0, ssrc,
+                                     std::move(batch)}
+                        .bytes();
+                this->_sync_sender.send_rtcp(std::move(nack_bytes));
+            }
+        }
+        for (auto ssrc : empty_ssrcs)
+            this->_nack_list.erase(ssrc);
+    }
+}
+
+void connection_impl::_start_nack_loop() {
+    if (!_srtp_transport)
+        return;
+    _nack_loop_task = stdexec::spawn_future(
+        stdexec::starts_on(stdexec::inline_scheduler{}, _nack_loop()),
+        _scope.get_token());
+}
+
 void connection_impl::_start_sender_loops() {
     if (!_srtp_transport)
         return;
@@ -1226,6 +1279,8 @@ void connection_impl::close() noexcept {
     _pt_codec_map.clear();
     _pt_receiver_map.clear();
     _mid_track_map.clear();
+    _nack_list.clear();
+    _nack_loop_task.reset();
     _mid_ext_id = 0;
 
     _local_desc.reset();
@@ -1471,13 +1526,24 @@ void connection_impl::do_on_rtp_rtcp_packet(asioice::io_buffer_ptr buf) {
             while (s != pkt->sequence_number) {
                 if (lost.size() < 32)
                     lost.push_back(s);
+                else
+                    break;
                 ++s;
             }
-            if (!lost.empty() && _srtp_transport) {
-                auto nack = rtcp::rtcp_rtpfb{rtcp::packet_type::RTPFB_NACK, 0,
-                                             pkt->ssrc, lost}
-                                .bytes();
-                _sync_sender.send_rtcp(std::move(nack));
+            if (!lost.empty()) {
+                auto &nack_list = _nack_list[pkt->ssrc];
+                for (uint16_t s : lost) {
+                    bool exists = false;
+                    for (const auto &e : nack_list)
+                        if (e.sequence_number == s) {
+                            exists = true;
+                            break;
+                        }
+                    if (!exists)
+                        nack_list.push_back(
+                            {s, std::chrono::steady_clock::now(),
+                             std::chrono::steady_clock::time_point{}, 0});
+                }
             }
 
             if (st.consecutive_lost >= 3 && _srtp_transport) {
@@ -1489,6 +1555,19 @@ void connection_impl::do_on_rtp_rtcp_packet(asioice::io_buffer_ptr buf) {
             }
         } else {
             st.consecutive_lost = 0;
+        }
+
+        // Received packet → remove from NACK list
+        {
+            auto nit = _nack_list.find(pkt->ssrc);
+            if (nit != _nack_list.end()) {
+                auto &entries = nit->second;
+                std::erase_if(entries, [&](const auto &e) {
+                    return e.sequence_number == pkt->sequence_number;
+                });
+                if (entries.empty())
+                    _nack_list.erase(nit);
+            }
         }
 
         // Three-tier demux: MID -> SSRC -> PT
@@ -1516,6 +1595,9 @@ void connection_impl::do_on_rtp_rtcp_packet(asioice::io_buffer_ptr buf) {
             } else {
                 pkt->payload = depayload(codec->name, std::move(pkt->payload));
             }
+
+            if (pkt->payload.empty())
+                return;
 
             track->push_frame(std::move(*pkt));
         };

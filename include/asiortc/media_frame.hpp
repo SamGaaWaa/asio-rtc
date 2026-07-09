@@ -1,7 +1,10 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <vector>
+
+#include "asiortc/rtp_frame_info.hpp"
 
 enum class media_kind : uint8_t { audio = 0, video = 1 };
 
@@ -43,6 +46,8 @@ struct media_frame {
 
     // 原始数据
     std::vector<uint8_t> data{};
+
+    std::optional<rtp_frame_info> info;
 };
 
 } // namespace asiortc

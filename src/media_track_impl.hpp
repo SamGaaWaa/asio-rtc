@@ -40,6 +40,8 @@ struct media_track_impl : public media_track {
     asioice::shared_promise<void> _on_frame{};
     jitter_buffer _jitter;
 
+    uint32_t _clock_rate;
+
     std::shared_ptr<codecs::decoder> _decoder{};
     std::string _decoder_codec_name;
 };

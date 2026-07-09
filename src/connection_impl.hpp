@@ -239,6 +239,7 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
     void do_on_rtp_rtcp_packet(asioice::io_buffer_ptr);
     bool do_on_new_ssrc(uint32_t ssrc, std::span<const uint8_t> data);
     void _start_sender_loops();
+    void _start_nack_loop();
     asiortc::task<void>
     _sender_send_loop(std::shared_ptr<rtp_sender> sender,
                       std::shared_ptr<srtp_transport_type> srtp);
@@ -248,6 +249,7 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
     asiortc::task<void>
     _receiver_rtcp_loop(std::shared_ptr<rtp_receiver> receiver,
                         std::shared_ptr<srtp_transport_type> srtp);
+    asiortc::task<void> _nack_loop();
 
     executor_type _executor;
     stdexec::counting_scope _scope{};
@@ -279,6 +281,16 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
     std::unordered_map<uint8_t, _pt_recv_entry> _pt_receiver_map{};
     std::unordered_map<std::string, std::shared_ptr<media_track_impl>>
         _mid_track_map{};
+
+    struct _nack_entry {
+        uint16_t sequence_number;
+        std::chrono::steady_clock::time_point first_requested;
+        std::chrono::steady_clock::time_point last_sent;
+        uint32_t retries = 0;
+    };
+    std::unordered_map<uint32_t, std::vector<_nack_entry>> _nack_list{};
+    uint32_t _current_rtt_ms = 100;
+
     int _mid_ext_id = 0;
 
     void _rebuild_pt_maps();
@@ -331,6 +343,7 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
     srtp_transport_base::on_rtp_rtcp_packet_callback_type _on_rtp_rtcp_cb{};
 
     std::optional<any_sender<void>> _ice_connection_state_watcher{};
+    std::optional<any_sender<void>> _nack_loop_task{};
 };
 
 } // namespace asiortc

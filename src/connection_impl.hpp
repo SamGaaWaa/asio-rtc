@@ -208,6 +208,9 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
     void close() noexcept;
     void on_remote_channel(on_data_channel_cb cb);
 
+    asiortc::task<bool> send_rtp(std::shared_ptr<rtp_sender> sender,
+                                 rtp::rtp_packet pkt);
+
   private:
     struct sync_rtp_rtcp_sender {
         sync_rtp_rtcp_sender(connection_impl &impl) : _impl{impl} {}
@@ -238,6 +241,7 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
     void do_on_data_channel(std::shared_ptr<data_channel_type> ch);
     void do_on_rtp_rtcp_packet(asioice::io_buffer_ptr);
     bool do_on_new_ssrc(uint32_t ssrc, std::span<const uint8_t> data);
+
     void _start_sender_loops();
     void _start_nack_loop();
     asiortc::task<void>

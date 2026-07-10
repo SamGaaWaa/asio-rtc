@@ -74,7 +74,9 @@ struct peer_connection {
     peer_connection(net::any_io_executor ex, configuration cfg = {});
 
     peer_connection(const peer_connection &) = delete;
-    peer_connection(peer_connection &&) = default;
+    peer_connection(peer_connection &&other) noexcept
+        : _impl{std::move(other._impl)} {}
+
     peer_connection &operator=(const peer_connection &) = delete;
     peer_connection &operator=(peer_connection &&other) noexcept {
         if (this != &other) {
@@ -117,6 +119,9 @@ struct peer_connection {
     rtp_transceiver_interface
     add_transceiver(std::shared_ptr<media_track> track,
                     rtp_transceiver_init init = {});
+
+    asiortc::task<bool> send_rtp(rtp_sender_interface sender,
+                                 rtp::rtp_packet pkt);
 
     data_channel_interface
     create_data_channel(std::string label, data_channel_options options = {});

@@ -209,6 +209,12 @@ rtc_stats_report peer_connection::get_stats() const {
     return _impl->get_stats();
 }
 
+asiortc::task<bool> peer_connection::send_rtp(rtp_sender_interface sender,
+                                              rtp::rtp_packet pkt) {
+    throw_if_nullptr(_impl, "send_rtp");
+    return _impl->send_rtp(sender._impl, std::move(pkt));
+}
+
 void peer_connection::close() noexcept {
     if (_impl)
         _impl->close();

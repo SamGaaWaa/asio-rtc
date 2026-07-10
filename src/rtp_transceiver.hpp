@@ -9,6 +9,7 @@
 #include "asiortc/rtp_parameters.hpp"
 #include "asiortc/codecs/base.hpp"
 #include "rtp_stream.hpp"
+#include "asiortc/rtp.hpp"
 #include "sdp.hpp"
 
 #include <functional>
@@ -54,6 +55,7 @@ struct rtp_sender : std::enable_shared_from_this<rtp_sender> {
   private:
     friend struct rtp_transceiver;
     friend struct connection_impl;
+    friend struct rtp_sender_interface;
 
     void set_msids(std::vector<std::string> msids) noexcept {
         _msids = std::move(msids);
@@ -106,6 +108,7 @@ struct rtp_receiver : std::enable_shared_from_this<rtp_receiver> {
   private:
     friend struct rtp_transceiver;
     friend struct connection_impl;
+    friend struct rtp_receiver_interface;
 
     std::string _mid{};
     std::shared_ptr<media_track> _track{};
@@ -113,6 +116,7 @@ struct rtp_receiver : std::enable_shared_from_this<rtp_receiver> {
     bool _stopped = false;
     rtp_receive_parameters _parameters{};
     std::optional<any_sender<void>> _rtcp_loop{};
+    std::function<bool(rtp::rtp_packet &)> _on_rtp_cb;
 };
 
 std::vector<sdp_codec> default_video_codecs();

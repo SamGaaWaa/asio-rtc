@@ -21,7 +21,7 @@
 #include "asioice/sctp_transport.hpp"
 #include "media_track_impl.hpp"
 #include "rtcp.hpp"
-#include "rtp.hpp"
+#include "asiortc/rtp.hpp"
 
 namespace asiortc {
 
@@ -1229,6 +1229,38 @@ void connection_impl::_start_nack_loop() {
         _scope.get_token());
 }
 
+asiortc::task<bool>
+connection_impl::send_rtp(std::shared_ptr<rtp_sender> sender,
+                          rtp::rtp_packet pkt) {
+    if (!_srtp_transport)
+        co_return false;
+
+    if (!sender->_streams.empty()) {
+        auto &st = sender->_streams[0];
+        pkt.ssrc = st->ssrc;
+        pkt.sequence_number = ++st->seq;
+    }
+
+    std::vector<uint8_t> buf(pkt.serialized_size());
+    pkt.write_to(buf.data(), buf.size());
+    try {
+        auto r = co_await _srtp_transport->send_rtp(buf);
+        bool ok = !std::get<0>(r);
+        if (ok) {
+            _tx_packets++;
+            _tx_bytes += buf.size();
+            if (!sender->_streams.empty()) {
+                auto &st = sender->_streams[0];
+                st->packet_count++;
+                st->octet_count += static_cast<uint32_t>(pkt.payload.size());
+            }
+        }
+        co_return ok;
+    } catch (...) {
+        co_return false;
+    }
+}
+
 void connection_impl::_start_sender_loops() {
     if (!_srtp_transport)
         return;
@@ -1585,6 +1617,17 @@ void connection_impl::do_on_rtp_rtcp_packet(asioice::io_buffer_ptr buf) {
                 auto dit = _decoder_registry.find(track->_decoder_codec_name);
                 if (dit != _decoder_registry.end())
                     track->_decoder = dit->second();
+            }
+
+            {
+                auto pt_it = _pt_receiver_map.find(pkt->payload_type);
+                if (pt_it != _pt_receiver_map.end()) {
+                    auto &recv = pt_it->second.receiver;
+                    if (recv && recv->_on_rtp_cb) {
+                        if (!recv->_on_rtp_cb(*pkt))
+                            return;
+                    }
+                }
             }
 
             if (codec->name == "rtx" && pkt->payload.size() >= 2) {

@@ -1,11 +1,14 @@
 #pragma once
 
+#include <cstddef>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include "asiortc/codecs/base.hpp"
 #include "asiortc/media_track.hpp"
+#include "asiortc/rtp.hpp"
 #include "asiortc/rtp_parameters.hpp"
 #include "asiortc/session_description.hpp"
 
@@ -26,6 +29,8 @@ struct rtp_sender_interface {
     const rtp_send_parameters &parameters() const noexcept;
     const std::vector<std::string> &msids() const noexcept;
     void set_track(std::shared_ptr<media_track> t) noexcept;
+    size_t num_streams() const noexcept;
+    uint32_t ssrc(size_t idx = 0) const;
     operator bool() const noexcept { return _impl != nullptr; }
 
   private:
@@ -47,6 +52,7 @@ struct rtp_receiver_interface {
     rtp_transceiver_interface transceiver() const noexcept;
     const rtp_receive_parameters &parameters() const noexcept;
     const std::shared_ptr<codecs::decoder> &decoder() const noexcept;
+    void set_on_rtp(std::function<bool(rtp::rtp_packet &)> cb);
     operator bool() const noexcept { return _impl != nullptr; }
 
   private:

@@ -1,5 +1,6 @@
 #include "asiortc/rtp_interfaces.hpp"
 
+#include "asiortc/rtp.hpp"
 #include "rtp_transceiver.hpp"
 
 namespace asiortc {
@@ -34,6 +35,14 @@ void rtp_sender_interface::set_track(std::shared_ptr<media_track> t) noexcept {
     _impl->set_track(std::move(t));
 }
 
+size_t rtp_sender_interface::num_streams() const noexcept {
+    return _impl->_streams.size();
+}
+
+uint32_t rtp_sender_interface::ssrc(size_t idx) const {
+    return _impl->_streams.at(idx)->ssrc;
+}
+
 // ── rtp_receiver_interface ─────────────────────────────────────
 
 const std::string &rtp_receiver_interface::mid() const noexcept {
@@ -59,6 +68,11 @@ rtp_receiver_interface::parameters() const noexcept {
 const std::shared_ptr<codecs::decoder> &
 rtp_receiver_interface::decoder() const noexcept {
     return _impl->decoder();
+}
+
+void rtp_receiver_interface::set_on_rtp(
+    std::function<bool(rtp::rtp_packet &)> cb) {
+    _impl->_on_rtp_cb = std::move(cb);
 }
 
 // ── rtp_transceiver_interface ──────────────────────────────────

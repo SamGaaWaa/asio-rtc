@@ -16,7 +16,8 @@ extern "C" {
 #include "asiortc/media_track.hpp"
 #include "asiortc/codecs/base.hpp"
 
-namespace asiortc::codecs {
+namespace asiortc::ffmpeg {
+using namespace asiortc::codecs;
 
 static uint32_t to_rtp_timestamp(int64_t pts, AVRational time_base) {
     if (time_base.den == 0)
@@ -486,4 +487,4 @@ std::shared_ptr<decoder> make_h264_decoder() {
     return std::make_shared<H264DecoderImpl>();
 }
 
-} // namespace asiortc::codecs
+} // namespace asiortc::ffmpeg

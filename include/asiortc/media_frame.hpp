@@ -18,11 +18,12 @@ enum class media_format : uint16_t {
     opus = 200,
     vp8 = 201,
     h264 = 202,
+    vp9 = 203,
 };
 
 inline bool is_encoded_format(media_format fmt) noexcept {
     using enum media_format;
-    return fmt == opus || fmt == vp8 || fmt == h264;
+    return fmt == opus || fmt == vp8 || fmt == h264 || fmt == vp9;
 }
 
 namespace asiortc {

@@ -16,120 +16,16 @@ extern "C" {
 
 #include "asiortc/media_track.hpp"
 #include "asiortc/codecs/base.hpp"
-#include "vpx_descriptor.hpp"
+#include "codecs/vpx_descriptor.hpp"
 
-namespace asiortc::codecs {
+namespace asiortc::ffmpeg {
+using namespace asiortc::codecs;
 
 static uint32_t to_rtp_timestamp(int64_t pts, AVRational time_base) {
     if (time_base.den == 0)
         return static_cast<uint32_t>(pts);
     // 使用 av_rescale_q 防止计算溢出并提高精度
     return static_cast<uint32_t>(av_rescale_q(pts, time_base, {1, 90000}));
-}
-
-// --- vpx_payload_descriptor ---
-
-vpx_payload_descriptor vpx_payload_descriptor::parse(const uint8_t *data,
-                                                     size_t len,
-                                                     size_t &consumed) {
-    vpx_payload_descriptor d;
-    consumed = 0;
-    if (len < 1)
-        return d;
-
-    uint8_t b0 = data[0];
-    bool extended = (b0 >> 7) & 1;
-    d.partition_start = (b0 >> 4) & 1;
-    d.partition_id = b0 & 0xF;
-    size_t pos = 1;
-
-    if (extended) {
-        if (len < pos + 1)
-            return d; // 数据不足，返回无效描述
-        uint8_t ext = data[pos++];
-        if (ext & 0x80) {
-            if (len < pos + 1)
-                return d;
-            // Picture ID (1 or 2 bytes)
-            if (data[pos] & 0x80) {
-                if (len < pos + 2)
-                    return d;
-                d.picture_id = ((data[pos] & 0x7F) << 8) | data[pos + 1];
-                pos += 2;
-            } else {
-                d.picture_id = data[pos];
-                pos += 1;
-            }
-        }
-        if (ext & 0x40) {
-            if (len < pos + 1)
-                return d;
-            d.tl0picidx = data[pos++];
-        }
-        if (ext & 0x30) {
-            if (len < pos + 1)
-                return d;
-            uint8_t tk = data[pos++];
-            if (ext & 0x20)
-                d.tid = {(tk >> 6) & 3, (tk >> 5) & 1};
-            if (ext & 0x10)
-                d.keyidx = tk & 0x1F;
-        }
-    }
-
-    consumed = pos;
-    return d;
-}
-
-std::vector<uint8_t> vpx_payload_descriptor::bytes() const {
-    std::vector<uint8_t> data;
-    // 基本头部: I (Extended), P (Partition Start), L (Partition ID 0-7), Part
-    // ID (4 bits) Byte 0: 1I 0P L [Part ID] 注意：VP8 RFC 中 I=bit 7, P=bit 4,
-    // L=bits 5-6? 实际上: I (1), P (1), 0 (1), 0 (1), PartID (4) ? 不对。
-    // 标准定义:
-    // |X|R|N|S| PartID | (X=Extended, R=Reserved, N=Reference, S=Start)
-    // 修正：原代码中 partition_start 是 bit 4，这是正确的。
-
-    uint8_t octet = (partition_start << 4) | (partition_id & 0xF);
-
-    bool has_ext = picture_id || tl0picidx || tid || keyidx;
-    if (has_ext) {
-        uint8_t ext = 0;
-        if (picture_id)
-            ext |= 0x80;
-        if (tl0picidx)
-            ext |= 0x40;
-        if (tid)
-            ext |= 0x20;
-        if (keyidx)
-            ext |= 0x10;
-
-        data.push_back(0x80 | octet); // Set X bit
-        data.push_back(ext);
-
-        if (picture_id) {
-            if (*picture_id < 128)
-                data.push_back(static_cast<uint8_t>(*picture_id));
-            else {
-                uint16_t v = 0x8000 | *picture_id;
-                data.push_back(static_cast<uint8_t>(v >> 8));
-                data.push_back(static_cast<uint8_t>(v & 0xFF));
-            }
-        }
-        if (tl0picidx)
-            data.push_back(*tl0picidx);
-        if (tid || keyidx) {
-            uint8_t tk = 0;
-            if (tid)
-                tk |= (tid->first << 6) | (tid->second << 5);
-            if (keyidx)
-                tk |= *keyidx & 0x1F;
-            data.push_back(tk);
-        }
-    } else {
-        data.push_back(octet);
-    }
-    return data;
 }
 
 // --- Vp8EncoderImpl ---
@@ -404,4 +300,4 @@ std::shared_ptr<decoder> make_vp8_decoder() {
     return std::make_shared<Vp8DecoderImpl>();
 }
 
-} // namespace asiortc::codecs
+} // namespace asiortc::ffmpeg

@@ -51,6 +51,10 @@ add_subdirectory(third_party/libsrtp)
     src/media_track_impl.cpp
     src/jitter_buffer.cpp
     src/rtp_capabilities.cpp
+    src/codecs/default_vpx.cpp
+    src/codecs/default_h264.cpp
+    src/codecs/default_opus.cpp
+    src/codecs/vpx_descriptor.cpp
 )
 add_library(asiortc STATIC ${RTC_SRC_FILES})
 target_link_libraries(asiortc PRIVATE asioice OpenSSL::SSL OpenSSL::Crypto srtp3)

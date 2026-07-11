@@ -12,7 +12,8 @@ extern "C" {
 #include "asiortc/media_track.hpp"
 #include "asiortc/codecs/base.hpp"
 
-namespace asiortc::codecs {
+namespace asiortc::ffmpeg {
+using namespace asiortc::codecs;
 
 static uint32_t to_rtp_timestamp(int64_t pts, AVRational time_base,
                                  int clock_rate) {
@@ -248,4 +249,4 @@ std::shared_ptr<decoder> make_opus_decoder() {
     return std::make_shared<OpusDecoderImpl>();
 }
 
-} // namespace asiortc::codecs
+} // namespace asiortc::ffmpeg

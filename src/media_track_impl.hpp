@@ -20,6 +20,9 @@ struct media_track_impl : public media_track {
     media_track_impl(media_kind k, std::string track_id);
 
     media_kind kind() const noexcept override { return _kind; }
+    media_format format() const noexcept override {
+        return media_format::unknown;
+    }
     std::string id() const noexcept override { return _id; }
     track_state ready_state() const noexcept override { return _state; }
     void stop() override;

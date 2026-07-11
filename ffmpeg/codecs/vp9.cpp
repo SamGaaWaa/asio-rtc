@@ -14,9 +14,10 @@ extern "C" {
 
 #include "asiortc/media_track.hpp"
 #include "asiortc/codecs/base.hpp"
-#include "vpx_descriptor.hpp"
+#include "codecs/vpx_descriptor.hpp"
 
-namespace asiortc::codecs {
+namespace asiortc::ffmpeg {
+using namespace asiortc::codecs;
 
 static uint32_t to_rtp_timestamp(int64_t pts, AVRational time_base) {
     if (time_base.den == 0)
@@ -248,4 +249,4 @@ std::shared_ptr<decoder> make_vp9_decoder() {
     return std::make_shared<Vp9DecoderImpl>();
 }
 
-} // namespace asiortc::codecs
+} // namespace asiortc::ffmpeg

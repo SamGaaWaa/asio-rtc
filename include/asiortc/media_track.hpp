@@ -17,6 +17,7 @@ struct media_track {
     virtual ~media_track() = default;
 
     virtual media_kind kind() const noexcept = 0;
+    virtual media_format format() const noexcept = 0;
     virtual std::string id() const noexcept = 0;
     virtual track_state ready_state() const noexcept = 0;
 

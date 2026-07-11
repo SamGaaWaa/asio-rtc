@@ -79,6 +79,7 @@ struct sending_video_track : public media_track {
         : _kind(media_kind::video), _id("sender-video"), _timer(ctx) {}
 
     media_kind kind() const noexcept override { return _kind; }
+    media_format format() const noexcept override { return media_format::vp8; }
     std::string id() const noexcept override { return _id; }
     track_state ready_state() const noexcept override { return _state; }
     void stop() override { _state = track_state::ended; }

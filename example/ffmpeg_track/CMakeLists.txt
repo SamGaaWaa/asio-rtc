@@ -2,14 +2,16 @@ set(FFMPEG_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/ffmpeg)
 
 add_executable(ffmpeg_track_example
     main.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/codecs/vpx.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/codecs/h264.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/codecs/vp9.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/codecs/opus.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../ffmpeg/codecs/vpx.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../ffmpeg/codecs/h264.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../ffmpeg/codecs/vp9.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../ffmpeg/codecs/opus.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src/codecs/g711.cpp
 )
 target_include_directories(ffmpeg_track_example PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/asio-ice/third_party
+    ${CMAKE_CURRENT_SOURCE_DIR}/../..
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../ffmpeg
     ${FFMPEG_ROOT}/include)
 target_link_libraries(ffmpeg_track_example PRIVATE asiortc_test_flags
                        OpenSSL::SSL OpenSSL::Crypto srtp3

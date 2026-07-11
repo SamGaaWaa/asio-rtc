@@ -255,6 +255,8 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
                         std::shared_ptr<srtp_transport_type> srtp);
     asiortc::task<void> _nack_loop();
 
+    void _register_default_codecs();
+
     executor_type _executor;
     stdexec::counting_scope _scope{};
 

@@ -23,6 +23,10 @@
 #include "rtcp.hpp"
 #include "asiortc/rtp.hpp"
 
+#include "codecs/default_h264.hpp"
+#include "codecs/default_opus.hpp"
+#include "codecs/default_vpx.hpp"
+
 namespace asiortc {
 
 static std::string to_string(signaling_state_t s) {
@@ -114,10 +118,24 @@ connection_impl::_sender_send_loop(std::shared_ptr<rtp_sender> sender,
             auto transceiver = sender->transceiver();
             if (!transceiver || transceiver->codecs().empty())
                 co_return;
-            for (const auto &c : transceiver->codecs()) {
+
+            auto fmt = track->format();
+            std::string preferred;
+            if (is_encoded_format(fmt)) {
+                if (fmt == media_format::vp8)
+                    preferred = "VP8";
+                else if (fmt == media_format::vp9)
+                    preferred = "VP9";
+                else if (fmt == media_format::h264)
+                    preferred = "H264";
+                else if (fmt == media_format::opus)
+                    preferred = "opus";
+            }
+
+            auto create_encoders = [&](const sdp_codec &c) -> bool {
                 auto it = this->_codec_registry.find(c.name);
                 if (it == this->_codec_registry.end())
-                    continue;
+                    return false;
                 sender->_pt = c.payload_type;
                 const auto &encs = transceiver->send_encodings;
                 size_t n = encs.empty() ? 1 : encs.size();
@@ -128,8 +146,23 @@ connection_impl::_sender_send_loop(std::shared_ptr<rtp_sender> sender,
                         ep.bitrate = static_cast<int>(*encs[i].max_bitrate);
                     sender->_encoders.push_back(it->second(ep));
                 }
-                break;
+                return true;
+            };
+
+            if (!preferred.empty()) {
+                for (const auto &c : transceiver->codecs()) {
+                    if (c.name == preferred && create_encoders(c))
+                        break;
+                }
             }
+
+            if (sender->_encoders.empty()) {
+                for (const auto &c : transceiver->codecs()) {
+                    if (create_encoders(c))
+                        break;
+                }
+            }
+
             if (sender->_encoders.empty())
                 co_return;
         }
@@ -292,6 +325,7 @@ connection_impl::connection_impl(connection_impl::executor_type ex,
                                  asiortc::configuration cfg)
     : _executor{std::move(ex)}, _bundle_policy{cfg.bundle_policy},
       _agent{_executor, get_agent_config(std::move(cfg))}, _sync_sender{*this} {
+    _register_default_codecs();
     _agent.on_local_candidates(
         std::bind_front(&connection_impl::do_on_candidates, this));
 }
@@ -1845,6 +1879,21 @@ void connection_impl::sync_rtp_rtcp_sender::send_rtcp(
                 }
             }(_impl._srtp_transport, _pending_rtcp),
             _impl._scope.get_token());
+}
+
+void connection_impl::_register_default_codecs() {
+    _codec_registry.try_emplace("VP8", [](const auto &p) {
+        return std::make_shared<codecs::DefaultVp8Encoder>(p);
+    });
+    _codec_registry.try_emplace("VP9", [](const auto &p) {
+        return std::make_shared<codecs::DefaultVp9Encoder>(p);
+    });
+    _codec_registry.try_emplace("H264", [](const auto &p) {
+        return std::make_shared<codecs::DefaultH264Encoder>(p);
+    });
+    _codec_registry.try_emplace("opus", [](const auto &p) {
+        return std::make_shared<codecs::DefaultOpusEncoder>(p);
+    });
 }
 
 } // namespace asiortc

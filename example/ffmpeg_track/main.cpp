@@ -22,10 +22,10 @@ namespace websocket = beast::websocket;
 
 #include "json.hpp"
 
-#include "codecs/vpx.hpp"
-#include "codecs/opus.hpp"
-#include "codecs/h264.hpp"
-#include "codecs/vp9.hpp"
+#include "ffmpeg/codecs/opus.hpp"
+#include "ffmpeg/codecs/vpx.hpp"
+#include "ffmpeg/codecs/h264.hpp"
+#include "ffmpeg/codecs/vp9.hpp"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -92,6 +92,7 @@ struct ffmpeg_video_track : public media_track {
           _timer(ctx) {}
 
     media_kind kind() const noexcept override { return media_kind::video; }
+    media_format format() const noexcept override;
     std::string id() const noexcept override { return _id; }
     track_state ready_state() const noexcept override { return _state; }
     void stop() override { _state = track_state::ended; }
@@ -111,6 +112,9 @@ struct ffmpeg_audio_track : public media_track {
         : _src(std::move(src)), _id(std::move(id)), _timer(ctx) {}
 
     media_kind kind() const noexcept override { return media_kind::audio; }
+    media_format format() const noexcept override {
+        return media_format::pcm_s16le;
+    }
     std::string id() const noexcept override { return _id; }
     track_state ready_state() const noexcept override { return _state; }
     void stop() override { _state = track_state::ended; }
@@ -144,14 +148,18 @@ struct ffmpeg_source : std::enable_shared_from_this<ffmpeg_source> {
         // --- Video Init ---
         if (_vstream >= 0) {
             auto *stream = _fmt_ctx->streams[_vstream];
-            const AVCodec *codec =
-                avcodec_find_decoder(stream->codecpar->codec_id);
-            _vctx = avcodec_alloc_context3(codec);
-            avcodec_parameters_to_context(_vctx, stream->codecpar);
-            avcodec_open2(_vctx, codec, nullptr);
+            auto codec_id = stream->codecpar->codec_id;
+            if (codec_id == AV_CODEC_ID_VP8)
+                _vformat = media_format::vp8;
+            else if (codec_id == AV_CODEC_ID_VP9)
+                _vformat = media_format::vp9;
+            else if (codec_id == AV_CODEC_ID_H264)
+                _vformat = media_format::h264;
+            else
+                _vstream = -1;
 
-            _width = _vctx->width;
-            _height = _vctx->height;
+            _width = stream->codecpar->width;
+            _height = stream->codecpar->height;
 
             _fps_num = stream->avg_frame_rate.num;
             _fps_den = stream->avg_frame_rate.den;
@@ -190,8 +198,6 @@ struct ffmpeg_source : std::enable_shared_from_this<ffmpeg_source> {
     }
 
     ~ffmpeg_source() {
-        if (_vctx)
-            avcodec_free_context(&_vctx);
         if (_actx)
             avcodec_free_context(&_actx);
         if (_fmt_ctx)
@@ -203,58 +209,38 @@ struct ffmpeg_source : std::enable_shared_from_this<ffmpeg_source> {
         if (_state == track_state::ended)
             return;
 
-        AVPacket *pkt = av_packet_alloc();
-        int ret = av_read_frame(_fmt_ctx, pkt);
+        std::unique_ptr<AVPacket, void (*)(AVPacket *)> pkt(
+            av_packet_alloc(), +[](AVPacket *p) { av_packet_free(&p); });
+        int ret = av_read_frame(_fmt_ctx, pkt.get());
 
         if (ret == AVERROR_EOF) {
             _rewind();
-            av_packet_free(&pkt);
             return;
         } else if (ret < 0) {
-            av_packet_free(&pkt);
             return;
         }
 
-        // Process Video
-        if (pkt->stream_index == _vstream && _vctx) {
-            ret = avcodec_send_packet(_vctx, pkt);
-            av_packet_unref(pkt);
-            av_packet_free(&pkt);
+        // Process Video — passthrough encoded data
+        if (pkt->stream_index == _vstream) {
+            std::vector<uint8_t> data(pkt->size);
+            std::memcpy(data.data(), pkt->data, pkt->size);
+            av_packet_unref(pkt.get());
 
-            if (ret < 0)
-                return;
+            media_frame mf;
+            mf.kind = media_kind::video;
+            mf.format = _vformat;
+            mf.timestamp = _vpts;
+            mf.data = std::move(data);
 
-            AVFrame *frame = av_frame_alloc();
-            ret = avcodec_receive_frame(_vctx, frame);
-
-            if (ret == 0) {
-                media_frame mf;
-                mf.kind = media_kind::video;
-                mf.format = media_format::yuv420p;
-                mf.timestamp = _vpts;
-                mf.width = frame->width;
-                mf.height = frame->height;
-
-                int y_size = mf.width * mf.height;
-                mf.data.resize(y_size + y_size / 2);
-                std::memcpy(mf.data.data(), frame->data[0], y_size);
-                std::memcpy(mf.data.data() + y_size, frame->data[1],
-                            y_size / 4);
-                std::memcpy(mf.data.data() + y_size + y_size / 4,
-                            frame->data[2], y_size / 4);
-
-                _vpts += 3000;
-                vqueue.push_back(std::move(mf));
-            }
-            av_frame_free(&frame);
+            _vpts += 3000;
+            vqueue.push_back(std::move(mf));
             return;
         }
 
         // Process Audio
         if (pkt->stream_index == _astream && _actx) {
-            ret = avcodec_send_packet(_actx, pkt);
-            av_packet_unref(pkt);
-            av_packet_free(&pkt);
+            ret = avcodec_send_packet(_actx, pkt.get());
+            av_packet_unref(pkt.get());
 
             if (ret < 0)
                 return;
@@ -307,8 +293,7 @@ struct ffmpeg_source : std::enable_shared_from_this<ffmpeg_source> {
             return;
         }
 
-        av_packet_unref(pkt);
-        av_packet_free(&pkt);
+        av_packet_unref(pkt.get());
     }
 
     void _rewind() {
@@ -316,8 +301,6 @@ struct ffmpeg_source : std::enable_shared_from_this<ffmpeg_source> {
             av_seek_frame(_fmt_ctx, _vstream, 0, AVSEEK_FLAG_BACKWARD);
         if (_astream >= 0)
             av_seek_frame(_fmt_ctx, _astream, 0, AVSEEK_FLAG_BACKWARD);
-        if (_vctx)
-            avcodec_flush_buffers(_vctx);
         if (_actx)
             avcodec_flush_buffers(_actx);
 
@@ -340,10 +323,11 @@ struct ffmpeg_source : std::enable_shared_from_this<ffmpeg_source> {
     std::shared_ptr<ffmpeg_audio_track> _atrack;
 
     AVFormatContext *_fmt_ctx = nullptr;
-    AVCodecContext *_vctx = nullptr, *_actx = nullptr;
+    AVCodecContext *_actx = nullptr;
 
     int _vstream = -1, _astream = -1;
     int _width = 0, _height = 0, _ach = 2;
+    media_format _vformat = media_format::unknown;
     uint32_t _vpts = 1, _apts = 1;
     int _fps_num = 30, _fps_den = 1;
     net::io_context &_ctx;
@@ -395,12 +379,16 @@ asioice::task<std::optional<media_frame>> ffmpeg_audio_track::recv() {
 
 } // namespace
 
+media_format ffmpeg_video_track::format() const noexcept {
+    return _src->_vformat;
+}
+
 std::vector<std::shared_ptr<media_track>>
 ffmpeg_track::open(const std::string &filepath, net::io_context &ctx) {
     auto src = std::make_shared<ffmpeg_source>(filepath, ctx);
     std::vector<std::shared_ptr<media_track>> tracks;
 
-    if (src->_vstream >= 0 && src->_vctx) {
+    if (src->_vstream >= 0 && src->_vformat != media_format::unknown) {
         auto frame_dur =
             std::chrono::milliseconds(src->_fps_den * 1000 / src->_fps_num);
         auto vt =
@@ -612,23 +600,14 @@ static task<void> ffmpeg_session(net::io_context &ctx, ws_ptr ws) {
         configuration{.ice_servers{.urls = {"stun:14.29.112.241:20002",
                                             "stun:stun.l.google.com:19302"}}});
 
-    conn.register_encoder("VP8", [](const codecs::encoder_params &p) {
-        return codecs::make_vp8_encoder(p);
-    });
-    conn.register_encoder("H264", [](const codecs::encoder_params &p) {
-        return codecs::make_h264_encoder(p);
-    });
-    conn.register_encoder("VP9", [](const codecs::encoder_params &p) {
-        return codecs::make_vp9_encoder(p);
-    });
     conn.register_encoder("opus", [](const codecs::encoder_params &p) {
-        return codecs::make_opus_encoder(p);
+        return ffmpeg::make_opus_encoder(p);
     });
 
-    conn.register_decoder("VP8", [] { return codecs::make_vp8_decoder(); });
-    conn.register_decoder("H264", [] { return codecs::make_h264_decoder(); });
-    conn.register_decoder("VP9", [] { return codecs::make_vp9_decoder(); });
-    conn.register_decoder("opus", [] { return codecs::make_opus_decoder(); });
+    conn.register_decoder("VP8", [] { return ffmpeg::make_vp8_decoder(); });
+    conn.register_decoder("H264", [] { return ffmpeg::make_h264_decoder(); });
+    conn.register_decoder("VP9", [] { return ffmpeg::make_vp9_decoder(); });
+    conn.register_decoder("opus", [] { return ffmpeg::make_opus_decoder(); });
 
     auto recorder = std::make_shared<ffmpeg_recorder>("recv.webm", 1280, 720,
                                                       30, 1, 48000, 2);

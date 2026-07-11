@@ -13,6 +13,7 @@
 #include "asiortc/peer_connection.hpp"
 #include "asiortc/media_track.hpp"
 #include "asiortc/rtc_stats.hpp"
+#include "asiortc/detail/packet_stream.hpp"
 #include "data_channel.hpp"
 #include "rtp_transceiver.hpp"
 #include "sdp.hpp"
@@ -208,8 +209,12 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
     void close() noexcept;
     void on_remote_channel(on_data_channel_cb cb);
 
-    asiortc::task<bool> send_rtp(std::shared_ptr<rtp_sender> sender,
-                                 rtp::rtp_packet pkt);
+    detail::packet_stream& rtp_send_buffer() noexcept {
+        return _send_buf;
+    }
+    void rewrite_rtp_packet(std::span<uint8_t> data, const rtp_sender& sender) noexcept;
+    std::span<uint8_t> encrypt_rtp(std::span<const uint8_t> data, std::span<uint8_t> buf) noexcept;
+    void update_sender_status_after_send_rtp(std::size_t octet, std::size_t encrypted, const rtp_sender& sender) noexcept;
 
   private:
     struct sync_rtp_rtcp_sender {
@@ -257,8 +262,12 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
 
     void _register_default_codecs();
 
+    asiortc::task<void> ice_send_loop();
+
     executor_type _executor;
     stdexec::counting_scope _scope{};
+    detail::packet_stream _send_buf{1024 * 1024};
+    std::optional<any_sender<void>> _ice_send_loop{};
 
     agent_type _agent;
     bundle_policy_t _bundle_policy{bundle_policy_t::max_bundle};

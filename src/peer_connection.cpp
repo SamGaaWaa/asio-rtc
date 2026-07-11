@@ -52,16 +52,20 @@ bool peer_connection::can_trickle_ice_candidates() const noexcept {
     return _impl->can_trickle_ice_candidates();
 }
 
-asiortc::task<void> peer_connection::add_ice_candidate(candidate c) {
-    throw_if_nullptr(_impl, "add_ice_candidate");
-    if (!(co_await _impl->add_ice_candidate(to_ice(c))))
-        throw std::runtime_error("add_ice_candidate failed");
+asiortc::task<void> peer_connection::add_ice_candidate(asiortc::candidate c) {
+    // throw_if_nullptr(_impl, "add_ice_candidate");
+    // if (!(co_await _impl->add_ice_candidate(to_ice(c))))
+    //     throw std::runtime_error("add_ice_candidate failed");
+
+    co_return;
 }
 
 asiortc::task<void> peer_connection::add_ice_candidate() {
-    throw_if_nullptr(_impl, "add_ice_candidate");
-    if (!(co_await _impl->add_ice_candidate()))
-        throw std::runtime_error("add_ice_candidate failed");
+    // throw_if_nullptr(_impl, "add_ice_candidate");
+    // if (!(co_await _impl->add_ice_candidate()))
+    //     throw std::runtime_error("add_ice_candidate failed");
+
+    co_return;
 }
 
 void peer_connection::on_candidates(on_candidates_cb cb) {
@@ -209,10 +213,32 @@ rtc_stats_report peer_connection::get_stats() const {
     return _impl->get_stats();
 }
 
-asiortc::task<bool> peer_connection::send_rtp(rtp_sender_interface sender,
-                                              rtp::rtp_packet pkt) {
-    throw_if_nullptr(_impl, "send_rtp");
-    return _impl->send_rtp(sender._impl, std::move(pkt));
+// asiortc::task<bool> peer_connection::send_rtp(rtp_sender_interface sender,
+//                                               rtp::rtp_packet pkt) {
+//     throw_if_nullptr(_impl, "send_rtp");
+//     return _impl->send_rtp(sender._impl, std::move(pkt));
+// }
+
+detail::packet_stream& peer_connection::rtp_send_buffer() noexcept {
+    assert(_impl);
+    return _impl->rtp_send_buffer();
+}
+
+void peer_connection::rewrite_rtp_packet(std::span<uint8_t> data, const rtp_sender_interface& sender) noexcept
+{
+    assert(_impl && sender);
+    _impl->rewrite_rtp_packet(data, *sender._impl);
+}
+
+std::span<uint8_t> peer_connection::encrypt_rtp(std::span<const uint8_t> data, std::span<uint8_t> buf) noexcept {
+    assert(_impl);
+    return _impl->encrypt_rtp(data, buf);
+}
+
+void peer_connection::update_sender_status_after_send_rtp(std::size_t octet, std::size_t encrypted, const rtp_sender_interface& sender) noexcept
+{
+    assert(_impl && sender);
+    _impl->update_sender_status_after_send_rtp(octet, encrypted, *sender._impl);
 }
 
 void peer_connection::close() noexcept {

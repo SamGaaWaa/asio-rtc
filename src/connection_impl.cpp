@@ -10,6 +10,8 @@
 #include <string>
 #include <ranges>
 
+#include <boost/container/static_vector.hpp>
+
 #include "asioice/agent_config.hpp"
 #include "asioice/candidate.hpp"
 #include "asioice/detail/binary.hpp"
@@ -536,6 +538,10 @@ asiortc::task<void> connection_impl::do_connect() {
         ICE_IN_DEBUG { std::cerr << "ICE connect failed\n"; }
         co_return;
     }
+    _ice_send_loop = stdexec::spawn_future(
+        this->ice_send_loop(),
+        _scope.get_token()
+    );
 
     auto setup_str = setup_from(*_remote_desc);
     bool we_are_active = (setup_str != "active");
@@ -1263,35 +1269,56 @@ void connection_impl::_start_nack_loop() {
         _scope.get_token());
 }
 
-asiortc::task<bool>
-connection_impl::send_rtp(std::shared_ptr<rtp_sender> sender,
-                          rtp::rtp_packet pkt) {
+void connection_impl::rewrite_rtp_packet(std::span<uint8_t> data, const rtp_sender& sender) noexcept
+{
+    // TODO
+}
+
+std::span<uint8_t> connection_impl::encrypt_rtp(std::span<const uint8_t> data, std::span<uint8_t> buf) noexcept
+{
     if (!_srtp_transport)
-        co_return false;
+        return {};
+    return _srtp_transport->protect_rtp(data, buf);
+}
 
-    if (!sender->_streams.empty()) {
-        auto &st = sender->_streams[0];
-        pkt.ssrc = st->ssrc;
-        pkt.sequence_number = ++st->seq;
-    }
+// asiortc::task<bool>
+// connection_impl::send_rtp(std::shared_ptr<rtp_sender> sender,
+//                           const rtp::rtp_packet& pkt) {
+//     if (!_srtp_transport)
+//         co_return false;
 
-    std::vector<uint8_t> buf(pkt.serialized_size());
-    pkt.write_to(buf.data(), buf.size());
-    try {
-        auto r = co_await _srtp_transport->send_rtp(buf);
-        bool ok = !std::get<0>(r);
-        if (ok) {
-            _tx_packets++;
-            _tx_bytes += buf.size();
-            if (!sender->_streams.empty()) {
-                auto &st = sender->_streams[0];
-                st->packet_count++;
-                st->octet_count += static_cast<uint32_t>(pkt.payload.size());
-            }
-        }
-        co_return ok;
-    } catch (...) {
-        co_return false;
+//     boost::container::static_vector<uint8_t, 2000> buf(2000);
+//     if (int n = pkt.write_to(buf.data(), buf.size()); n < 0)
+//         co_return false;
+//     else
+//         buf.resize(n);
+//     // TODO: rewrite ssrc, sequence number
+//     try {
+//         auto r = co_await _srtp_transport->send_rtp(buf);
+//         bool ok = !std::get<0>(r);
+//         if (ok) {
+//             _tx_packets++;
+//             _tx_bytes += buf.size();
+//             if (!sender->_streams.empty()) {
+//                 auto &st = sender->_streams[0];
+//                 st->packet_count++;
+//                 st->octet_count += static_cast<uint32_t>(pkt.payload.size());
+//             }
+//         }
+//         co_return ok;
+//     } catch (...) {
+//         co_return false;
+//     }
+// }
+
+void connection_impl::update_sender_status_after_send_rtp(std::size_t octet, std::size_t encrypted, const rtp_sender& sender) noexcept
+{
+    _tx_packets++;
+    _tx_bytes += encrypted;
+    if (!sender._streams.empty()) {
+        auto &st = sender._streams[0];
+        st->packet_count++;
+        st->octet_count += static_cast<uint32_t>(octet);
     }
 }
 
@@ -1327,6 +1354,7 @@ void connection_impl::close() noexcept {
     _connection_state = connection_state_t::closed;
     _agent.close();
     _sync_sender.stop();
+    _ice_send_loop.reset();
     if (_data_channel_manager)
         _data_channel_manager->stop();
     _ice_transport.reset();
@@ -1894,6 +1922,19 @@ void connection_impl::_register_default_codecs() {
     _codec_registry.try_emplace("opus", [](const auto &p) {
         return std::make_shared<codecs::DefaultOpusEncoder>(p);
     });
+}
+
+asiortc::task<void> connection_impl::ice_send_loop() {
+    while (true) {
+        if (!_send_buf.readable())
+            co_await _send_buf.wait_readable();
+        auto pkt = _send_buf.peek();
+        asioice::utils::scope_guard on_exit([&]() noexcept {
+            _send_buf.pop();
+        });
+        // TODO: avoid heap allocation
+        co_await _agent.sendto(pkt, 1);
+    }
 }
 
 } // namespace asiortc

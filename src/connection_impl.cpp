@@ -538,10 +538,8 @@ asiortc::task<void> connection_impl::do_connect() {
         ICE_IN_DEBUG { std::cerr << "ICE connect failed\n"; }
         co_return;
     }
-    _ice_send_loop = stdexec::spawn_future(
-        this->ice_send_loop(),
-        _scope.get_token()
-    );
+    _ice_send_loop =
+        stdexec::spawn_future(this->ice_send_loop(), _scope.get_token());
 
     auto setup_str = setup_from(*_remote_desc);
     bool we_are_active = (setup_str != "active");
@@ -1269,13 +1267,18 @@ void connection_impl::_start_nack_loop() {
         _scope.get_token());
 }
 
-void connection_impl::rewrite_rtp_packet(std::span<uint8_t> data, const rtp_sender& sender) noexcept
-{
-    // TODO
+void connection_impl::rewrite_rtp_packet(std::span<uint8_t> data,
+                                         const rtp_sender &sender) noexcept {
+    if (data.size() < 12 || sender._streams.empty())
+        return;
+    auto &st = sender._streams[0];
+    asioice::binary::write_big<uint16_t>(data.data() + 2, ++st->seq);
+    asioice::binary::write_big<uint32_t>(data.data() + 8, st->ssrc);
 }
 
-std::span<uint8_t> connection_impl::encrypt_rtp(std::span<const uint8_t> data, std::span<uint8_t> buf) noexcept
-{
+std::span<uint8_t>
+connection_impl::encrypt_rtp(std::span<const uint8_t> data,
+                             std::span<uint8_t> buf) noexcept {
     if (!_srtp_transport)
         return {};
     return _srtp_transport->protect_rtp(data, buf);
@@ -1311,8 +1314,9 @@ std::span<uint8_t> connection_impl::encrypt_rtp(std::span<const uint8_t> data, s
 //     }
 // }
 
-void connection_impl::update_sender_status_after_send_rtp(std::size_t octet, std::size_t encrypted, const rtp_sender& sender) noexcept
-{
+void connection_impl::update_sender_status_after_send_rtp(
+    std::size_t octet, std::size_t encrypted,
+    const rtp_sender &sender) noexcept {
     _tx_packets++;
     _tx_bytes += encrypted;
     if (!sender._streams.empty()) {
@@ -1929,9 +1933,8 @@ asiortc::task<void> connection_impl::ice_send_loop() {
         if (!_send_buf.readable())
             co_await _send_buf.wait_readable();
         auto pkt = _send_buf.peek();
-        asioice::utils::scope_guard on_exit([&]() noexcept {
-            _send_buf.pop();
-        });
+        asioice::utils::scope_guard on_exit(
+            [&]() noexcept { _send_buf.pop(); });
         // TODO: avoid heap allocation
         co_await _agent.sendto(pkt, 1);
     }

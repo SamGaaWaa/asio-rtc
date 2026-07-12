@@ -41,8 +41,8 @@ static const uint16_t PORT = 8086;
 static task<void> ws_send(ws_t &ws, const nlohmann::json &msg) {
     ws.text(true);
     auto d = msg.dump();
-    auto [ec, n] =
-        co_await ws.async_write(net::buffer(d), net::as_tuple(utils::use_sender));
+    auto [ec, n] = co_await ws.async_write(net::buffer(d),
+                                           net::as_tuple(utils::use_sender));
     if (ec)
         std::cerr << "ws err: " << ec.message() << '\n';
 }
@@ -67,41 +67,40 @@ static task<void> sfw_session(net::io_context &ctx, ws_ptr ws) {
     exec::async_scope scope;
     net::steady_timer timer(ctx);
 
-    peer_connection conn(ctx.get_executor(), configuration{
-        .ice_servers{.urls = {"stun:14.29.112.241:20002"}}
-    });
+    peer_connection conn(
+        ctx.get_executor(),
+        configuration{.ice_servers{.urls = {"stun:14.29.112.241:20002"}}});
 
     std::cout << "Waiting for browser offer...\n";
     auto msg = co_await ws_recv(*ws);
     auto offer = parse_sdp(msg["sdp"].get<std::string>(), "offer");
     std::cout << "Offer: medias=" << offer.medias.size() << '\n';
 
-    auto tr = conn.add_transceiver(media_kind::video,
+    auto tr = conn.add_transceiver(
+        media_kind::video,
         {.direction = sdp_direction::sendrecv, .streams = {"sfu-loopback"}});
     std::cout << "Created video sendrecv mid=" << tr.mid() << '\n';
 
     co_await conn.set_remote_description(std::move(offer));
 
     std::cout << "Transceiver: direction="
-              << (tr.direction() == sdp_direction::sendrecv ? "sendrecv"
+              << (tr.direction() == sdp_direction::sendrecv   ? "sendrecv"
                   : tr.direction() == sdp_direction::sendonly ? "sendonly"
                   : tr.direction() == sdp_direction::recvonly ? "recvonly"
-                  : "inactive")
-              << " mid=" << tr.mid()
-              << " codecs=" << tr.codecs().size()
+                                                              : "inactive")
+              << " mid=" << tr.mid() << " codecs=" << tr.codecs().size()
               << " sender_ssrc=" << tr.sender().ssrc(0)
-              << " num_streams=" << tr.sender().num_streams()
-              << '\n';
+              << " num_streams=" << tr.sender().num_streams() << '\n';
 
     auto answer = co_await conn.create_answer();
     co_await conn.set_local_description(
         parse_sdp(answer.to_string(), "answer"));
 
     std::cout << "After set_local: direction="
-              << (tr.direction() == sdp_direction::sendrecv ? "sendrecv"
+              << (tr.direction() == sdp_direction::sendrecv   ? "sendrecv"
                   : tr.direction() == sdp_direction::sendonly ? "sendonly"
                   : tr.direction() == sdp_direction::recvonly ? "recvonly"
-                  : "inactive")
+                                                              : "inactive")
               << " sender_ssrc=" << tr.sender().ssrc(0) << '\n';
 
     {
@@ -143,17 +142,17 @@ static task<void> sfw_session(net::io_context &ctx, ws_ptr ws) {
         static int n;
         if (++n <= 10 || (n & 0xFF) == 0)
             std::cerr << "[sfu] RX pkt: seq=" << pkt.sequence_number
-                      << " ts=" << pkt.timestamp
-                      << " ssrc=" << pkt.ssrc
-                      << " size=" << pkt.payload.size() << "B"
-                      << " total=" << n << '\n';
+                      << " ts=" << pkt.timestamp << " ssrc=" << pkt.ssrc
+                      << " size=" << pkt.payload.size() << "B" << " total=" << n
+                      << '\n';
         sfw_queue.push(pkt);
         return false;
     });
 
     scope.spawn(stdexec::starts_on(
-        sched, [](peer_connection conn, rtp_sender_interface send,
-                  auto &sfw_queue) -> task<void> {
+        sched,
+        [](peer_connection conn, rtp_sender_interface send,
+           auto &sfw_queue) -> task<void> {
             uint32_t sent = 0;
             uint32_t failed = 0;
             while (true) {
@@ -164,7 +163,7 @@ static task<void> sfw_session(net::io_context &ctx, ws_ptr ws) {
                         co_return;
                 }
                 auto seq = pkt->sequence_number;
-                bool ok = co_await conn.send_rtp(send, std::move(*pkt));
+                bool ok = co_await conn.send_rtp(send, *pkt);
                 if (ok) {
                     sent++;
                     if ((sent & 0xFF) == 0)
@@ -190,19 +189,17 @@ static task<void> sfw_session(net::io_context &ctx, ws_ptr ws) {
 }
 
 static task<void> http_session(net::io_context &ctx,
-                                net::ip::tcp::socket sock) {
+                               net::ip::tcp::socket sock) {
     beast::flat_buffer buf;
     http::request<http::string_body> req;
-    auto [ec, n] =
-        co_await http::async_read(sock, buf, req, utils::use_sender);
+    auto [ec, n] = co_await http::async_read(sock, buf, req, utils::use_sender);
     if (ec) {
         std::cerr << "http read: " << ec.message() << '\n';
         co_return;
     }
 
     if (websocket::is_upgrade(req)) {
-        auto ws = std::make_shared<ws_t>(
-            beast::tcp_stream(std::move(sock)));
+        auto ws = std::make_shared<ws_t>(beast::tcp_stream(std::move(sock)));
         auto [wec] =
             co_await ws->async_accept(req, net::as_tuple(utils::use_sender));
         if (wec) {
@@ -272,9 +269,8 @@ run();
 </script>
 </body></html>)";
         res.prepare_payload();
-        auto [sec, _] =
-            co_await http::async_write(sock, res,
-                                       net::as_tuple(utils::use_sender));
+        auto [sec, _] = co_await http::async_write(
+            sock, res, net::as_tuple(utils::use_sender));
         if (sec)
             std::cerr << "http write: " << sec.message() << '\n';
     }

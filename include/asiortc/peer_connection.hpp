@@ -9,7 +9,6 @@
 #include <array>
 
 #include "asiortc/config.hpp"
-#include "asiortc/detail/packet_stream.hpp"
 
 #if ASIORTC_USE_STANDALONE_ASIO
 #define ASIOICE_USE_BOOST_ASIO 0
@@ -33,6 +32,7 @@ namespace net = boost::asio;
 #include "asiortc/rtp_parameters.hpp"
 #include "asiortc/session_description.hpp"
 #include "asiortc/task.hpp"
+#include "asiortc/detail/packet_stream.hpp"
 #include "asiortc/codecs/base.hpp"
 #include "asiortc/datachannel.hpp"
 #include "asioice/detail/asio2exec.hpp"
@@ -96,10 +96,10 @@ struct peer_connection {
         return utils::scheduler{get_executor()};
     }
 
-    task<session_description> create_offer();
-    task<session_description> create_answer();
-    task<void> set_local_description(session_description desc);
-    task<void> set_remote_description(session_description desc);
+    asiortc::task<session_description> create_offer();
+    asiortc::task<session_description> create_answer();
+    asiortc::task<void> set_local_description(session_description desc);
+    asiortc::task<void> set_remote_description(session_description desc);
     const session_description *local_description() const noexcept;
 
     bool can_trickle_ice_candidates() const noexcept;
@@ -123,36 +123,32 @@ struct peer_connection {
     add_transceiver(std::shared_ptr<media_track> track,
                     rtp_transceiver_init init = {});
 
-    // auto send_rtp(const rtp_sender_interface& sender, const rtp::rtp_packet& pkt)
-    // {
-    //     if (!_impl || !sender)
-    //         throw std::runtime_error{"!_impl || !sender"};
-    //     return stdexec::just(std::array<uint8_t, 2000>{}) |
-    //             stdexec::let_value([&, this](auto& buf) {
-    //                 int n = pkt.write_to(buf.data(), buf.size());
-    //                 if (n < 0)
-    //                     throw std::runtime_error{"send_rtp: pkt.write_to failed"};
-    //                 rewrite_rtp_packet({buf.data(), (std::size_t)n}, sender);
-    //                 auto enc = encrypt_rtp({buf.data(), (std::size_t)n}, buf);
-    //                 if (enc.empty())
-    //                     throw std::runtime_error{"send_rtp: encrypt_rtp failed"};
-    //                 return rtp_send_buffer().async_write({enc.data(), enc.size()}) |
-    //                         stdexec::then([&sender, &pkt, enc_size = enc.size(), this] (auto sent){
-    //                             if (sent)
-    //                                 update_sender_status_after_send_rtp(pkt.payload.size(), enc_size, sender);
-    //                             return sent;
-    //                         });
-    //             });
-    //             // |
-    //             // stdexec::upon_error([](auto err) {
-    //             //     return false;
-    //             // });
-    // }
-
-    asiortc::task<bool> send_rtp(const rtp_sender_interface& sender, const rtp::rtp_packet& pkt) {
-        co_return false;
+    auto send_rtp(const rtp_sender_interface &sender,
+                  const rtp::rtp_packet &pkt) {
+        if (!_impl || !sender)
+            throw std::runtime_error{"!_impl || !sender"};
+        return stdexec::just(std::array<uint8_t, 2000>{}) |
+               stdexec::let_value([&, this](auto &buf) {
+                   int n = pkt.write_to(buf.data(), buf.size());
+                   if (n < 0)
+                       throw std::runtime_error{
+                           "send_rtp: pkt.write_to failed"};
+                   rewrite_rtp_packet({buf.data(), (std::size_t)n}, sender);
+                   auto enc = encrypt_rtp({buf.data(), (std::size_t)n}, buf);
+                   if (enc.empty())
+                       throw std::runtime_error{"send_rtp: encrypt_rtp failed"};
+                   return rtp_send_buffer().async_write(
+                              {enc.data(), enc.size()}) |
+                          stdexec::then([&sender, &pkt, enc_size = enc.size(),
+                                         this](auto sent) {
+                              if (sent)
+                                  update_sender_status_after_send_rtp(
+                                      pkt.payload.size(), enc_size, sender);
+                              return sent;
+                          });
+               }) |
+               stdexec::upon_error([](auto err) { return false; });
     }
-
 
     data_channel_interface
     create_data_channel(std::string label, data_channel_options options = {});
@@ -181,10 +177,14 @@ struct peer_connection {
     void close() noexcept;
 
   private:
-    detail::packet_stream& rtp_send_buffer() noexcept;
-    void rewrite_rtp_packet(std::span<uint8_t> data, const rtp_sender_interface& sender) noexcept;
-    std::span<uint8_t> encrypt_rtp(std::span<const uint8_t> data, std::span<uint8_t> buf) noexcept;
-    void update_sender_status_after_send_rtp(std::size_t octet, std::size_t encrypted, const rtp_sender_interface& sender) noexcept;
+    detail::packet_stream &rtp_send_buffer() noexcept;
+    void rewrite_rtp_packet(std::span<uint8_t> data,
+                            const rtp_sender_interface &sender) noexcept;
+    std::span<uint8_t> encrypt_rtp(std::span<const uint8_t> data,
+                                   std::span<uint8_t> buf) noexcept;
+    void update_sender_status_after_send_rtp(
+        std::size_t octet, std::size_t encrypted,
+        const rtp_sender_interface &sender) noexcept;
 
     std::shared_ptr<connection_impl> _impl;
 };

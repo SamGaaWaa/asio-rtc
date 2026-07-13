@@ -18,6 +18,7 @@
 #include "rtp_transceiver.hpp"
 #include "sdp.hpp"
 #include "srtp_transport.hpp"
+#include "twcc.hpp"
 
 #if ASIOICE_USE_BOOST_ASIO > 0
 #include <boost/asio/ip/udp.hpp>
@@ -328,12 +329,11 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
         std::chrono::steady_clock::time_point send_time;
     };
     std::array<std::optional<_twcc_sent_entry>, TWCC_SENT_SIZE> _twcc_sent{};
-    static constexpr size_t TWCC_RECV_SIZE = 1024;
-    struct _twcc_recv_entry {
-        uint16_t transport_seq;
-        std::chrono::steady_clock::time_point recv_time;
-    };
-    std::vector<_twcc_recv_entry> _twcc_recv;
+
+    transport_cc _twcc;
+
+    std::unordered_map<uint32_t, std::chrono::steady_clock::time_point>
+        _last_pli_time;
 
     std::optional<session_description> _local_desc{};
     std::optional<session_description> _remote_desc{};

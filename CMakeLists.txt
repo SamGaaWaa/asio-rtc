@@ -51,6 +51,7 @@ add_subdirectory(third_party/libsrtp)
     src/media_track_impl.cpp
     src/jitter_buffer.cpp
     src/rtp_capabilities.cpp
+    src/twcc.cpp
     src/codecs/default_vpx.cpp
     src/codecs/default_h264.cpp
     src/codecs/default_opus.cpp

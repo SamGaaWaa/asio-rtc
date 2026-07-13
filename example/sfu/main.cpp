@@ -139,12 +139,6 @@ static task<void> sfw_session(net::io_context &ctx, ws_ptr ws) {
               << " num_streams=" << send.num_streams() << '\n';
 
     tr.receiver().set_on_rtp([&](rtp::rtp_packet &pkt) {
-        static int n;
-        if (++n <= 10 || (n & 0xFF) == 0)
-            std::cerr << "[sfu] RX pkt: seq=" << pkt.sequence_number
-                      << " ts=" << pkt.timestamp << " ssrc=" << pkt.ssrc
-                      << " size=" << pkt.payload.size() << "B" << " total=" << n
-                      << '\n';
         sfw_queue.push(pkt);
         return false;
     });
@@ -152,9 +146,7 @@ static task<void> sfw_session(net::io_context &ctx, ws_ptr ws) {
     scope.spawn(stdexec::starts_on(
         sched,
         [](peer_connection conn, rtp_sender_interface send,
-           auto &sfw_queue) -> task<void> {
-            uint32_t sent = 0;
-            uint32_t failed = 0;
+            auto &sfw_queue) -> task<void> {
             while (true) {
                 auto pkt = sfw_queue.try_pop();
                 if (!pkt) {
@@ -162,19 +154,7 @@ static task<void> sfw_session(net::io_context &ctx, ws_ptr ws) {
                     if (!pkt)
                         co_return;
                 }
-                auto seq = pkt->sequence_number;
-                bool ok = co_await conn.send_rtp(send, *pkt);
-                if (ok) {
-                    sent++;
-                    if ((sent & 0xFF) == 0)
-                        std::cerr << "[sfu] TX: sent=" << sent
-                                  << " failed=" << failed << '\n';
-                } else {
-                    failed++;
-                    static int n;
-                    if (++n <= 3)
-                        std::cerr << "[sfu] TX FAIL seq=" << seq << '\n';
-                }
+                co_await conn.send_rtp(send, *pkt);
             }
         }(std::move(conn), send, sfw_queue)));
 
@@ -227,12 +207,13 @@ async function run() {
   ws.onopen = () => log('WS open');
 
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({video:true,audio:false});
+     const stream = await navigator.mediaDevices.getUserMedia({
+         video: { width: 1280, height: 720 },
+         audio: false
+     });
     log('Camera: ' + stream.getTracks().length + ' tracks');
     document.getElementById('local').srcObject = stream;
-    stream.getTracks().forEach(t => {
-      pc.addTrack(t, stream);
-    });
+    stream.getTracks().forEach(t => { pc.addTrack(t, stream); });
   } catch(e) { log('Camera err: ' + e); }
 
   pc.ontrack = e => {
@@ -259,6 +240,14 @@ async function run() {
     const m = JSON.parse(e.data);
     if (m.type === 'answer') {
       await pc.setRemoteDescription({type:'answer',sdp:m.sdp});
+      pc.getSenders().forEach(sender => {
+        const params = sender.getParameters();
+        if (params.encodings.length > 0) {
+          params.encodings[0].maxBitrate = 4000000;
+          params.encodings[0].scaleResolutionDownBy = 1;
+          sender.setParameters(params);
+        }
+      });
       log('Answer received');
     }
   };

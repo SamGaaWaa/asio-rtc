@@ -13,8 +13,7 @@ struct rtcp_header_t {
     uint16_t length;
 };
 
-static_assert(sizeof(rtcp_header_t) == 4,
-              "RTCP header must be 4 bytes");
+static_assert(sizeof(rtcp_header_t) == 4, "RTCP header must be 4 bytes");
 
 struct rtcp_sr_sender_info_t {
     uint32_t ntp_ts_msw;
@@ -40,31 +39,28 @@ static_assert(sizeof(rtcp_report_block_t) == 24,
               "RTCP report block must be 24 bytes");
 #pragma pack(pop)
 
-static report_block
-parse_report_block(const void *data) noexcept {
+static report_block parse_report_block(const void *data) noexcept {
     const auto *rb = static_cast<const rtcp_report_block_t *>(data);
     report_block b;
     b.ssrc = asioice::binary::ntoh<uint32_t>(rb->ssrc);
-    uint32_t flc = asioice::binary::ntoh<uint32_t>(rb->fraction_lost_cumulative);
+    uint32_t flc =
+        asioice::binary::ntoh<uint32_t>(rb->fraction_lost_cumulative);
     b.fraction_lost = static_cast<uint8_t>((flc >> 24) & 0xFF);
     b.cumulative_lost = flc & 0x00FFFFFF;
-    b.ext_highest_seq =
-        asioice::binary::ntoh<uint32_t>(rb->ext_highest_seq);
+    b.ext_highest_seq = asioice::binary::ntoh<uint32_t>(rb->ext_highest_seq);
     b.jitter = asioice::binary::ntoh<uint32_t>(rb->jitter);
     b.lsr = asioice::binary::ntoh<uint32_t>(rb->lsr);
     b.dlsr = asioice::binary::ntoh<uint32_t>(rb->dlsr);
     return b;
 }
 
-static void write_report_block(void *data,
-                               const report_block &b) noexcept {
+static void write_report_block(void *data, const report_block &b) noexcept {
     auto *rb = static_cast<rtcp_report_block_t *>(data);
     rb->ssrc = asioice::binary::hton<uint32_t>(b.ssrc);
     uint32_t flc = (static_cast<uint32_t>(b.fraction_lost) << 24) |
                    (b.cumulative_lost & 0x00FFFFFF);
     rb->fraction_lost_cumulative = asioice::binary::hton<uint32_t>(flc);
-    rb->ext_highest_seq =
-        asioice::binary::hton<uint32_t>(b.ext_highest_seq);
+    rb->ext_highest_seq = asioice::binary::hton<uint32_t>(b.ext_highest_seq);
     rb->jitter = asioice::binary::hton<uint32_t>(b.jitter);
     rb->lsr = asioice::binary::hton<uint32_t>(b.lsr);
     rb->dlsr = asioice::binary::hton<uint32_t>(b.dlsr);
@@ -94,8 +90,7 @@ std::optional<rtcp_packet> rtcp_packet::parse(const void *data,
 
     switch (pkt.type) {
     case packet_type::SR: {
-        if (total < offset + sizeof(uint32_t) +
-                         sizeof(rtcp_sr_sender_info_t))
+        if (total < offset + sizeof(uint32_t) + sizeof(rtcp_sr_sender_info_t))
             return {};
 
         pkt.ssrc = asioice::binary::read_big<uint32_t>(ptr + offset);
@@ -108,8 +103,7 @@ std::optional<rtcp_packet> rtcp_packet::parse(const void *data,
                  asioice::binary::ntoh<uint32_t>(si->ntp_ts_msw))
              << 32) |
             asioice::binary::ntoh<uint32_t>(si->ntp_ts_lsw);
-        pkt.rtp_timestamp =
-            asioice::binary::ntoh<uint32_t>(si->rtp_ts);
+        pkt.rtp_timestamp = asioice::binary::ntoh<uint32_t>(si->rtp_ts);
         pkt.sender_packet_count =
             asioice::binary::ntoh<uint32_t>(si->sender_packet_count);
         pkt.sender_octet_count =
@@ -131,8 +125,7 @@ std::optional<rtcp_packet> rtcp_packet::parse(const void *data,
                 payload_len -= pad_len;
             }
             if (payload_len > 0)
-                pkt.payload.assign(ptr + offset,
-                                   ptr + offset + payload_len);
+                pkt.payload.assign(ptr + offset, ptr + offset + payload_len);
         }
         break;
     }
@@ -158,22 +151,22 @@ std::optional<rtcp_packet> rtcp_packet::parse(const void *data,
                 payload_len -= pad_len;
             }
             if (payload_len > 0)
-                pkt.payload.assign(ptr + offset,
-                                   ptr + offset + payload_len);
+                pkt.payload.assign(ptr + offset, ptr + offset + payload_len);
         }
         break;
     }
     case packet_type::RTPFB:
     case packet_type::PSFB: {
-        if (total < offset + 8) return {};
+        if (total < offset + 8)
+            return {};
         // sender_ssrc at offset, ignored
-        pkt.media_ssrc =
-            asioice::binary::read_big<uint32_t>(ptr + offset + 4);
+        pkt.media_ssrc = asioice::binary::read_big<uint32_t>(ptr + offset + 4);
         offset += 8;
         std::size_t payload_len = total - offset;
         if (pkt.padding && payload_len > 0) {
             uint8_t pad_len = ptr[total - 1];
-            if (pad_len == 0 || pad_len > payload_len) return {};
+            if (pad_len == 0 || pad_len > payload_len)
+                return {};
             payload_len -= pad_len;
         }
         if (payload_len > 0)
@@ -208,12 +201,11 @@ int rtcp_packet::write_to(void *data, std::size_t len) const noexcept {
         return -1;
 
     auto *header = static_cast<rtcp_header_t *>(data);
-    header->version_p_rc =
-        static_cast<uint8_t>((version << 6) | (padding << 5) |
-                              (report_count & 0x1F));
+    header->version_p_rc = static_cast<uint8_t>(
+        (version << 6) | (padding << 5) | (report_count & 0x1F));
     header->type = type;
-    header->length =
-        asioice::binary::hton<uint16_t>(static_cast<uint16_t>(serialized / 4 - 1));
+    header->length = asioice::binary::hton<uint16_t>(
+        static_cast<uint16_t>(serialized / 4 - 1));
 
     auto *ptr = reinterpret_cast<uint8_t *>(data) + sizeof(rtcp_header_t);
 
@@ -224,12 +216,10 @@ int rtcp_packet::write_to(void *data, std::size_t len) const noexcept {
 
     if (type == packet_type::SR) {
         auto *si = reinterpret_cast<rtcp_sr_sender_info_t *>(ptr);
-        si->ntp_ts_msw =
-            asioice::binary::hton<uint32_t>(
-                static_cast<uint32_t>(ntp_timestamp >> 32));
-        si->ntp_ts_lsw =
-            asioice::binary::hton<uint32_t>(
-                static_cast<uint32_t>(ntp_timestamp & 0xFFFFFFFF));
+        si->ntp_ts_msw = asioice::binary::hton<uint32_t>(
+            static_cast<uint32_t>(ntp_timestamp >> 32));
+        si->ntp_ts_lsw = asioice::binary::hton<uint32_t>(
+            static_cast<uint32_t>(ntp_timestamp & 0xFFFFFFFF));
         si->rtp_ts = asioice::binary::hton<uint32_t>(rtp_timestamp);
         si->sender_packet_count =
             asioice::binary::hton<uint32_t>(sender_packet_count);
@@ -311,8 +301,7 @@ std::vector<rtcp_packet> parse_compound(const void *data,
     return packets;
 }
 
-bool rtcp_packet::is_rtcp_packet(const void *data,
-                                  std::size_t len) noexcept {
+bool rtcp_packet::is_rtcp_packet(const void *data, std::size_t len) noexcept {
     if (len < sizeof(rtcp_header_t))
         return false;
     const auto *buf = static_cast<const uint8_t *>(data);
@@ -331,13 +320,13 @@ uint8_t rtcp_packet::get_packet_type(const void *data,
 
 std::vector<uint8_t> rtcp_rtpfb::bytes() const {
     size_t n = lost.size();
-    size_t hdr = 12;  // RTCP header + sender_ssrc + media_ssrc
+    size_t hdr = 12; // RTCP header + sender_ssrc + media_ssrc
     size_t fci = n * 4;
     size_t total = hdr + fci;
 
     std::vector<uint8_t> data(total, 0);
     // RTCP common header
-    data[0] = (2 << 6) | 1;  // V=2, RC=1
+    data[0] = (2 << 6) | 1; // V=2, RC=1
     data[1] = packet_type::RTPFB;
     uint16_t len_words = static_cast<uint16_t>((total / 4) - 1);
     asioice::binary::write_big<uint16_t>(data.data() + 2, len_words);
@@ -346,8 +335,7 @@ std::vector<uint8_t> rtcp_rtpfb::bytes() const {
     asioice::binary::write_big<uint32_t>(data.data() + 8, media_ssrc);
 
     for (size_t i = 0; i < n; ++i) {
-        asioice::binary::write_big<uint16_t>(data.data() + 12 + i * 4,
-                                             lost[i]);
+        asioice::binary::write_big<uint16_t>(data.data() + 12 + i * 4, lost[i]);
         // BLP = 0 (single loss)
     }
     return data;
@@ -373,31 +361,29 @@ std::vector<uint8_t> rtcp_psfb::bytes() const {
 
 // --- REMB FCI ---
 
-std::pair<uint32_t, std::vector<uint32_t>>
-parse_remb(const uint8_t *data, size_t len) {
+std::pair<uint32_t, std::vector<uint32_t>> parse_remb(const uint8_t *data,
+                                                      size_t len) {
     std::pair<uint32_t, std::vector<uint32_t>> result{0, {}};
     if (len < 8)
         return result;
-    if (data[0] != 'R' || data[1] != 'E' || data[2] != 'M' ||
-        data[3] != 'B')
+    if (data[0] != 'R' || data[1] != 'E' || data[2] != 'M' || data[3] != 'B')
         return result;
     uint8_t num_ssrc = data[4];
     uint8_t br_exp = (data[5] >> 2) & 0x3F;
-    uint32_t br_mantissa =
-        ((data[5] & 0x03) << 16) | (data[6] << 8) | data[7];
+    uint32_t br_mantissa = ((data[5] & 0x03) << 16) | (data[6] << 8) | data[7];
     result.first = br_mantissa << br_exp;
 
     size_t pos = 8;
     for (uint8_t i = 0; i < num_ssrc && pos + 4 <= len; ++i) {
-        result.second.push_back(
-            asioice::binary::ntoh<uint32_t>(*reinterpret_cast<const uint32_t *>(data + pos)));
+        result.second.push_back(asioice::binary::ntoh<uint32_t>(
+            *reinterpret_cast<const uint32_t *>(data + pos)));
         pos += 4;
     }
     return result;
 }
 
 std::vector<uint8_t> pack_remb(uint32_t bitrate,
-                                const std::vector<uint32_t> &ssrcs) {
+                               const std::vector<uint32_t> &ssrcs) {
     uint8_t exp = 0;
     while (bitrate > 0x3FFFF) {
         bitrate >>= 1;
@@ -417,8 +403,7 @@ std::vector<uint8_t> pack_remb(uint32_t bitrate,
     data[6] = static_cast<uint8_t>((mantissa >> 8) & 0xFF);
     data[7] = static_cast<uint8_t>(mantissa & 0xFF);
     for (size_t i = 0; i < ssrcs.size(); ++i)
-        asioice::binary::write_big<uint32_t>(data.data() + 8 + i * 4,
-                                             ssrcs[i]);
+        asioice::binary::write_big<uint32_t>(data.data() + 8 + i * 4, ssrcs[i]);
     return data;
 }
 
@@ -443,7 +428,7 @@ std::vector<uint8_t> sdes_chunk::bytes() const {
 
     // RTCP header
     std::vector<uint8_t> full(4 + data.size());
-    full[0] = (2 << 6) | 1;  // V=2, SC=1
+    full[0] = (2 << 6) | 1; // V=2, SC=1
     full[1] = packet_type::SDES;
     uint16_t len_words = static_cast<uint16_t>((full.size() / 4) - 1);
     asioice::binary::write_big<uint16_t>(full.data() + 2, len_words);
@@ -469,8 +454,8 @@ std::vector<uint16_t> parse_nack(const uint8_t *data, size_t len) {
     return lost;
 }
 
-std::optional<transport_cc_feedback>
-parse_transport_cc(const uint8_t *data, size_t len) {
+std::optional<transport_cc_feedback> parse_transport_cc(const uint8_t *data,
+                                                        size_t len) {
     if (len < 8)
         return std::nullopt;
     transport_cc_feedback fb;
@@ -487,8 +472,7 @@ parse_transport_cc(const uint8_t *data, size_t len) {
     return fb;
 }
 
-std::vector<uint8_t>
-build_transport_cc(const transport_cc_feedback &fb) {
+std::vector<uint8_t> build_transport_cc(const transport_cc_feedback &fb) {
     size_t fci_size = 8 + fb.packet_chunks.size();
     std::vector<uint8_t> fci(fci_size);
     asioice::binary::write_big<uint16_t>(fci.data(), fb.base_seq);
@@ -510,44 +494,103 @@ build_transport_cc(const transport_cc_feedback &fb) {
     asioice::binary::write_big<uint32_t>(pkt.data() + 4, fb.sender_ssrc);
     asioice::binary::write_big<uint32_t>(pkt.data() + 8, fb.media_ssrc);
     std::memcpy(pkt.data() + 12, fci.data(), fci.size());
+    size_t orig_size = pkt.size();
+    while (pkt.size() % 4 != 0)
+        pkt.push_back(0);
+    if (pkt.size() > orig_size) {
+        pkt[0] |= 0x20;
+        pkt.back() = static_cast<uint8_t>(pkt.size() - orig_size);
+    }
+    asioice::binary::write_big<uint16_t>(
+        pkt.data() + 2, static_cast<uint16_t>(pkt.size() / 4 - 1));
     return pkt;
 }
 
 std::vector<tcc_packet_info>
-tcc_parse_packet_status(const transport_cc_feedback &) {
-    // Full chunk parsing deferred to GCC implementation
-    return {};
+tcc_parse_packet_status(const transport_cc_feedback &fb) {
+    std::vector<tcc_packet_info> result;
+    result.reserve(fb.status_count);
+
+    size_t chunk_bytes = ((fb.status_count + 6) / 7) * 2;
+    if (chunk_bytes > fb.packet_chunks.size())
+        return result;
+
+    size_t delta_start = chunk_bytes;
+    size_t delta_off = 0;
+
+    size_t chunk_off = 0;
+    for (uint16_t i = 0; i < fb.status_count;) {
+        if (chunk_off + 2 > chunk_bytes)
+            break;
+        uint16_t chunk =
+            asioice::binary::ntoh<uint16_t>(*reinterpret_cast<const uint16_t *>(
+                fb.packet_chunks.data() + chunk_off));
+        chunk_off += 2;
+
+        int bits = 12;
+        for (int j = 0; j < 7 && i < fb.status_count; ++j, ++i) {
+            uint8_t sym = (chunk >> bits) & 3;
+            int16_t delta = 0;
+
+            if (sym == 1) {
+                if (delta_start + delta_off < fb.packet_chunks.size()) {
+                    delta = static_cast<int16_t>(
+                                fb.packet_chunks[delta_start + delta_off]) -
+                            128;
+                    delta_off++;
+                }
+            } else if (sym == 2) {
+                if (delta_start + delta_off + 1 < fb.packet_chunks.size()) {
+                    delta =
+                        static_cast<int16_t>(asioice::binary::ntoh<uint16_t>(
+                            *reinterpret_cast<const uint16_t *>(
+                                fb.packet_chunks.data() + delta_start +
+                                delta_off))) -
+                        32768;
+                    delta_off += 2;
+                }
+            }
+
+            result.push_back({sym == 0   ? tcc_packet_status::not_received
+                              : sym == 1 ? tcc_packet_status::small_delta
+                                         : tcc_packet_status::large_delta,
+                              delta});
+        }
+    }
+    return result;
 }
 
 std::vector<uint8_t>
 tcc_build_packet_status(const std::vector<tcc_packet_info> &packets) {
     std::vector<uint8_t> chunks;
-    chunks.reserve((packets.size() / 7 + 1) * 2 +
-                   packets.size());
+    chunks.reserve((packets.size() / 7 + 1) * 2 + packets.size());
     std::vector<uint8_t> deltas;
     for (size_t i = 0; i < packets.size();) {
-        uint16_t chunk = 0;
+        uint16_t chunk = 0xC000;
         int bits = 12;
         for (int j = 0; j < 7 && i < packets.size(); ++j, ++i) {
             uint8_t sym = 0;
             if (packets[i].status == tcc_packet_status::small_delta) {
                 sym = 1;
-                deltas.push_back(
-                    static_cast<uint8_t>(packets[i].delta & 0xFF));
-            } else if (packets[i].status ==
-                       tcc_packet_status::large_delta) {
+                deltas.push_back(static_cast<uint8_t>(packets[i].delta));
+            } else if (packets[i].status == tcc_packet_status::large_delta) {
                 sym = 2;
                 uint16_t d = static_cast<uint16_t>(packets[i].delta);
                 deltas.push_back(static_cast<uint8_t>((d >> 8) & 0xFF));
                 deltas.push_back(static_cast<uint8_t>(d & 0xFF));
+            } else if (packets[i].status ==
+                       tcc_packet_status::received_without_delta) {
+                sym = 3;
             }
             chunk |= (sym << bits);
             bits -= 2;
         }
+
         size_t off = chunks.size();
         chunks.resize(off + 2);
         asioice::binary::write_big<uint16_t>(chunks.data() + off, chunk);
     }
+
     chunks.insert(chunks.end(), deltas.begin(), deltas.end());
     return chunks;
 }

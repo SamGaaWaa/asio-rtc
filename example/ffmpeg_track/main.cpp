@@ -704,7 +704,7 @@ static task<void> ffmpeg_session(net::io_context &ctx, ws_ptr ws) {
 
     // Run for 60 seconds
     net::steady_timer loop_timer(ctx);
-    loop_timer.expires_after(std::chrono::seconds(20));
+    loop_timer.expires_after(std::chrono::seconds(40));
     auto [ec] =
         co_await loop_timer.async_wait(net::as_tuple(utils::use_sender));
     if (ec)

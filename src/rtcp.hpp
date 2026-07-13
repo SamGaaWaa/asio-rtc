@@ -120,6 +120,7 @@ enum class tcc_packet_status : uint8_t {
     not_received = 0,
     small_delta = 1,
     large_delta = 2,
+    received_without_delta = 3,
 };
 
 struct tcc_packet_info {

@@ -1256,6 +1256,17 @@ asiortc::task<void> connection_impl::_nack_loop() {
         }
         for (auto ssrc : empty_ssrcs)
             this->_nack_list.erase(ssrc);
+
+        if (!_transceivers.empty()) {
+            const auto& sndr = _transceivers.front()->_sender;
+            if (sndr && !sndr->_streams.empty()) {
+                _twcc.set_sender_ssrc(sndr->_streams.front()->ssrc);
+            }
+        }
+        auto twcc_bytes = this->_twcc.report();
+        if (!twcc_bytes.empty()) {
+            this->_sync_sender.send_rtcp(std::move(twcc_bytes));
+        }
     }
 }
 
@@ -1546,6 +1557,11 @@ void connection_impl::do_on_rtp_rtcp_packet(asioice::io_buffer_ptr buf) {
     if (pkt) {
         std::shared_ptr<media_track_impl> mid_track;
 
+        _twcc.set_media_ssrc(pkt->ssrc);
+        _twcc.handle_incoming(pkt->extension_data, [this](std::vector<uint8_t> report) {
+            _sync_sender.send_rtcp(std::move(report));
+        });
+
         if (!pkt->extension_data.empty()) {
             const auto &ext = pkt->extension_data;
             size_t off = 0;
@@ -1557,14 +1573,6 @@ void connection_impl::do_on_rtp_rtcp_packet(asioice::io_buffer_ptr buf) {
                 }
                 uint8_t id = (hdr >> 4) & 0xF;
                 uint8_t len = (hdr & 0xF) + 1;
-                if (id == 4 && off + 1 + len <= ext.size()) {
-                    uint16_t tcc_seq =
-                        (static_cast<uint16_t>(ext[off + 1]) << 8) |
-                        static_cast<uint16_t>(ext[off + 2]);
-                    _twcc_recv.push_back(
-                        {.transport_seq = tcc_seq,
-                         .recv_time = std::chrono::steady_clock::now()});
-                }
                 if (_mid_ext_id > 0 &&
                     id == static_cast<uint8_t>(_mid_ext_id) &&
                     off + 1 + len <= ext.size()) {

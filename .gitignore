@@ -5,3 +5,5 @@ boost*
 aiortc/
 test.webm
 include/asiortc/config.hpp
+libdatachannel*
+werift-webrtc

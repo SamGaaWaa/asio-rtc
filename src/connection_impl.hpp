@@ -18,6 +18,7 @@
 #include "rtp_transceiver.hpp"
 #include "sdp.hpp"
 #include "srtp_transport.hpp"
+#include "nack_generator.hpp"
 #include "twcc.hpp"
 
 #if ASIOICE_USE_BOOST_ASIO > 0
@@ -210,12 +211,14 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
     void close() noexcept;
     void on_remote_channel(on_data_channel_cb cb);
 
-    detail::packet_stream& rtp_send_buffer() noexcept {
-        return _send_buf;
-    }
-    void rewrite_rtp_packet(std::span<uint8_t> data, const rtp_sender& sender) noexcept;
-    std::span<uint8_t> encrypt_rtp(std::span<const uint8_t> data, std::span<uint8_t> buf) noexcept;
-    void update_sender_status_after_send_rtp(std::size_t octet, std::size_t encrypted, const rtp_sender& sender) noexcept;
+    detail::packet_stream &rtp_send_buffer() noexcept { return _send_buf; }
+    void rewrite_rtp_packet(std::span<uint8_t> data,
+                            const rtp_sender &sender) noexcept;
+    std::span<uint8_t> encrypt_rtp(std::span<const uint8_t> data,
+                                   std::span<uint8_t> buf) noexcept;
+    void update_sender_status_after_send_rtp(std::size_t octet,
+                                             std::size_t encrypted,
+                                             const rtp_sender &sender) noexcept;
 
   private:
     struct sync_rtp_rtcp_sender {
@@ -298,15 +301,6 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
     std::unordered_map<std::string, std::shared_ptr<media_track_impl>>
         _mid_track_map{};
 
-    struct _nack_entry {
-        uint16_t sequence_number;
-        std::chrono::steady_clock::time_point first_requested;
-        std::chrono::steady_clock::time_point last_sent;
-        uint32_t retries = 0;
-    };
-    std::unordered_map<uint32_t, std::vector<_nack_entry>> _nack_list{};
-    uint32_t _current_rtt_ms = 100;
-
     int _mid_ext_id = 0;
 
     void _rebuild_pt_maps();
@@ -331,6 +325,7 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
     std::array<std::optional<_twcc_sent_entry>, TWCC_SENT_SIZE> _twcc_sent{};
 
     transport_cc _twcc;
+    std::unordered_map<uint32_t, nack_generator> _nack_gens;
 
     std::unordered_map<uint32_t, std::chrono::steady_clock::time_point>
         _last_pli_time;

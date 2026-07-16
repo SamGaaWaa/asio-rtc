@@ -295,7 +295,7 @@ bool srtp_transport_base::datagram_received(asioice::io_buffer_ptr &buffer) {
     auto data_span = std::span<uint8_t>(buffer->data(), buffer->size());
 
     if (is_rtcp_packet(data_span)) {
-        auto result = unprotect_rtp(data_span, data_span);
+        auto result = unprotect_rtcp(data_span, data_span);
         if (result.empty())
             return true;
         buffer->consume_back(data_span.size() - result.size());

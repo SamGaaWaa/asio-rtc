@@ -1087,7 +1087,7 @@ asiortc::task<void> connection_impl::_sender_rtcp_loop(
     std::vector<uint8_t> compound;
 
     net::steady_timer timer(this->get_executor());
-    while (sender->stopped()) {
+    while (!sender->stopped()) {
         auto delay =
             std::chrono::milliseconds(static_cast<int>(dist(gen) * 1000));
         timer.expires_after(delay);
@@ -1133,7 +1133,7 @@ asiortc::task<void> connection_impl::_receiver_rtcp_loop(
     auto track = receiver->track();
     if (!track)
         co_return;
-    while (receiver->stopped()) {
+    while (!receiver->stopped()) {
         auto delay =
             std::chrono::milliseconds(static_cast<int>(dist(gen) * 1000));
         timer.expires_after(delay);
@@ -1209,6 +1209,9 @@ asiortc::task<void> connection_impl::_receiver_rtcp_loop(
         if (compound.empty())
             continue;
 
+        auto sdes = rtcp::sdes_chunk{0, "asiortc"}.bytes();
+        compound.insert(compound.end(), sdes.begin(), sdes.end());
+
         auto send_result = co_await srtp->send_rtcp(compound);
         if (std::get<0>(send_result))
             co_return;
@@ -1217,6 +1220,7 @@ asiortc::task<void> connection_impl::_receiver_rtcp_loop(
 
 asiortc::task<void> connection_impl::_nack_loop() {
     net::steady_timer timer(this->get_executor());
+    std::vector<uint16_t> nacks;
     while (true) {
         timer.expires_after(std::chrono::milliseconds(20));
         auto ec = co_await timer.async_wait(asioice::utils::use_sender);
@@ -1224,41 +1228,22 @@ asiortc::task<void> connection_impl::_nack_loop() {
             co_return;
 
         auto now = std::chrono::steady_clock::now();
-        std::vector<uint32_t> empty_ssrcs;
-        for (auto &nack_entry : this->_nack_list) {
-            auto ssrc = nack_entry.first;
-            auto &entries = nack_entry.second;
-            std::erase_if(entries,
-                          [](const auto &e) { return e.retries >= 10; });
-
-            std::vector<uint16_t> batch;
-            for (auto it = entries.begin(); it != entries.end(); ++it) {
-                auto elapsed =
-                    std::chrono::duration_cast<std::chrono::milliseconds>(
-                        now - it->last_sent);
-                if (elapsed.count() <
-                    static_cast<int64_t>(this->_current_rtt_ms)) {
-                    continue;
-                }
-                batch.push_back(it->sequence_number);
-                it->last_sent = now;
-                it->retries++;
-            }
-            if (entries.empty())
-                empty_ssrcs.push_back(ssrc);
-            if (!batch.empty()) {
+        auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          now.time_since_epoch())
+                          .count();
+        for (auto &[ssrc, gen] : _nack_gens) {
+            gen.get_nacks(now_ms, nacks);
+            if (!nacks.empty()) {
                 auto nack_bytes =
                     rtcp::rtcp_rtpfb{rtcp::packet_type::RTPFB_NACK, 0, ssrc,
-                                     std::move(batch)}
+                                     std::move(nacks)}
                         .bytes();
-                this->_sync_sender.send_rtcp(std::move(nack_bytes));
+                _sync_sender.send_rtcp(std::move(nack_bytes));
             }
         }
-        for (auto ssrc : empty_ssrcs)
-            this->_nack_list.erase(ssrc);
 
         if (!_transceivers.empty()) {
-            const auto& sndr = _transceivers.front()->_sender;
+            const auto &sndr = _transceivers.front()->_sender;
             if (sndr && !sndr->_streams.empty()) {
                 _twcc.set_sender_ssrc(sndr->_streams.front()->ssrc);
             }
@@ -1294,36 +1279,6 @@ connection_impl::encrypt_rtp(std::span<const uint8_t> data,
         return {};
     return _srtp_transport->protect_rtp(data, buf);
 }
-
-// asiortc::task<bool>
-// connection_impl::send_rtp(std::shared_ptr<rtp_sender> sender,
-//                           const rtp::rtp_packet& pkt) {
-//     if (!_srtp_transport)
-//         co_return false;
-
-//     boost::container::static_vector<uint8_t, 2000> buf(2000);
-//     if (int n = pkt.write_to(buf.data(), buf.size()); n < 0)
-//         co_return false;
-//     else
-//         buf.resize(n);
-//     // TODO: rewrite ssrc, sequence number
-//     try {
-//         auto r = co_await _srtp_transport->send_rtp(buf);
-//         bool ok = !std::get<0>(r);
-//         if (ok) {
-//             _tx_packets++;
-//             _tx_bytes += buf.size();
-//             if (!sender->_streams.empty()) {
-//                 auto &st = sender->_streams[0];
-//                 st->packet_count++;
-//                 st->octet_count += static_cast<uint32_t>(pkt.payload.size());
-//             }
-//         }
-//         co_return ok;
-//     } catch (...) {
-//         co_return false;
-//     }
-// }
 
 void connection_impl::update_sender_status_after_send_rtp(
     std::size_t octet, std::size_t encrypted,
@@ -1388,7 +1343,7 @@ void connection_impl::close() noexcept {
     _pt_codec_map.clear();
     _pt_receiver_map.clear();
     _mid_track_map.clear();
-    _nack_list.clear();
+    _nack_gens.clear();
     _nack_loop_task.reset();
     _mid_ext_id = 0;
 
@@ -1558,9 +1513,10 @@ void connection_impl::do_on_rtp_rtcp_packet(asioice::io_buffer_ptr buf) {
         std::shared_ptr<media_track_impl> mid_track;
 
         _twcc.set_media_ssrc(pkt->ssrc);
-        _twcc.handle_incoming(pkt->extension_data, [this](std::vector<uint8_t> report) {
-            _sync_sender.send_rtcp(std::move(report));
-        });
+        _twcc.handle_incoming(pkt->extension_data,
+                              [this](std::vector<uint8_t> report) {
+                                  _sync_sender.send_rtcp(std::move(report));
+                              });
 
         if (!pkt->extension_data.empty()) {
             const auto &ext = pkt->extension_data;
@@ -1589,6 +1545,7 @@ void connection_impl::do_on_rtp_rtcp_packet(asioice::io_buffer_ptr buf) {
         // Track stream statistics for RTCP RR
         auto &st = _stream_stats[pkt->ssrc];
         st.ssrc = pkt->ssrc;
+        uint32_t prev_expected = st.packets_expected;
         if (!st.base_seq_set) {
             st.base_seq = pkt->sequence_number;
             st.base_seq_set = true;
@@ -1618,39 +1575,12 @@ void connection_impl::do_on_rtp_rtcp_packet(asioice::io_buffer_ptr buf) {
         st.last_rtp_ts = pkt->timestamp;
 
         // PLI + NACK trigger: gap detection
-        uint32_t expected =
-            st.base_seq_set
-                ? st.cycles + st.base_seq + (st.packets_expected % 0x10000)
-                : pkt->sequence_number;
+        uint32_t expected = st.base_seq_set ? st.cycles + st.base_seq +
+                                                  (prev_expected % 0x10000)
+                                            : pkt->sequence_number;
         if (st.base_seq_set &&
             pkt->sequence_number != static_cast<uint16_t>(expected)) {
             st.consecutive_lost++;
-
-            // NACK: collect lost sequence numbers
-            std::vector<uint16_t> lost;
-            uint16_t s = static_cast<uint16_t>(expected);
-            while (s != pkt->sequence_number) {
-                if (lost.size() < 32)
-                    lost.push_back(s);
-                else
-                    break;
-                ++s;
-            }
-            if (!lost.empty()) {
-                auto &nack_list = _nack_list[pkt->ssrc];
-                for (uint16_t s : lost) {
-                    bool exists = false;
-                    for (const auto &e : nack_list)
-                        if (e.sequence_number == s) {
-                            exists = true;
-                            break;
-                        }
-                    if (!exists)
-                        nack_list.push_back(
-                            {s, std::chrono::steady_clock::now(),
-                             std::chrono::steady_clock::time_point{}, 0});
-                }
-            }
 
             if (st.consecutive_lost >= 3 && _srtp_transport) {
                 auto pli =
@@ -1663,18 +1593,7 @@ void connection_impl::do_on_rtp_rtcp_packet(asioice::io_buffer_ptr buf) {
             st.consecutive_lost = 0;
         }
 
-        // Received packet → remove from NACK list
-        {
-            auto nit = _nack_list.find(pkt->ssrc);
-            if (nit != _nack_list.end()) {
-                auto &entries = nit->second;
-                std::erase_if(entries, [&](const auto &e) {
-                    return e.sequence_number == pkt->sequence_number;
-                });
-                if (entries.empty())
-                    _nack_list.erase(nit);
-            }
-        }
+        _nack_gens[pkt->ssrc].receive_packet(pkt->sequence_number);
 
         // Three-tier demux: MID -> SSRC -> PT
         auto to_push = [&](std::shared_ptr<media_track_impl> track) {

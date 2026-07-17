@@ -70,7 +70,7 @@ rtp_receiver_interface::decoder() const noexcept {
     return _impl->decoder();
 }
 
-void rtp_receiver_interface::set_on_rtp(
+void rtp_receiver_interface::on_rtp(
     std::function<bool(rtp::rtp_packet &)> cb) {
     _impl->_on_rtp_cb = std::move(cb);
 }

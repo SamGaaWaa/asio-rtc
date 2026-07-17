@@ -105,6 +105,9 @@ struct rtp_receiver : std::enable_shared_from_this<rtp_receiver> {
         return _parameters;
     }
 
+    void on_rtp(std::function<bool(rtp::rtp_packet &)> cb) {
+        _on_rtp_cb = std::move(cb);
+    }
   private:
     friend struct rtp_transceiver;
     friend struct connection_impl;

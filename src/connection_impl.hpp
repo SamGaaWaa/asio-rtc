@@ -155,11 +155,6 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
         _on_new_ssrc_cb = std::move(cb);
     }
 
-    void on_rtp_rtcp_packet(
-        srtp_transport_base::on_rtp_rtcp_packet_callback_type cb) {
-        _on_rtp_rtcp_cb = std::move(cb);
-    }
-
     signaling_state_t signaling_state() const noexcept {
         return _signaling_state.get();
     }
@@ -221,25 +216,6 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
                                              const rtp_sender &sender) noexcept;
 
   private:
-    struct sync_rtp_rtcp_sender {
-        sync_rtp_rtcp_sender(connection_impl &impl) : _impl{impl} {}
-
-        void stop() noexcept {
-            _send_rtcp_task.reset();
-            _send_rtp_task.reset();
-        }
-
-        void send_rtp(std::vector<uint8_t> data);
-        void send_rtcp(std::vector<uint8_t> data);
-
-      private:
-        connection_impl &_impl;
-        asioice::async_queue<std::vector<uint8_t>> _pending_rtcp{64};
-        asioice::async_queue<std::vector<uint8_t>> _pending_rtp{64};
-        std::optional<any_sender<void>> _send_rtcp_task{};
-        std::optional<any_sender<void>> _send_rtp_task{};
-    };
-
     asiortc::task<void> apply_descriptions();
     void start_gathering();
     void do_on_candidates(std::span<const asioice::candidate>);
@@ -267,11 +243,16 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
     void _register_default_codecs();
 
     asiortc::task<void> ice_send_loop();
+    bool sync_send_rtp(std::span<const uint8_t> data) noexcept;
+    bool sync_send_rtcp(std::span<const uint8_t> data) noexcept;
+
+    asiortc::task<void> periodic_cleaning_loop();
 
     executor_type _executor;
     stdexec::counting_scope _scope{};
     detail::packet_stream _send_buf{1024 * 1024};
     std::optional<any_sender<void>> _ice_send_loop{};
+    std::optional<any_sender<void>> _periodic_cleaning_task{};
 
     agent_type _agent;
     bundle_policy_t _bundle_policy{bundle_policy_t::max_bundle};
@@ -285,7 +266,6 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
     std::optional<datachannel_manager_type> _data_channel_manager{};
 
     std::vector<std::shared_ptr<rtp_transceiver>> _transceivers{};
-    sync_rtp_rtcp_sender _sync_sender;
 
     std::unordered_map<uint32_t, std::shared_ptr<media_track_impl>>
         _ssrc_track_map{};
@@ -350,7 +330,6 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
     bool _need_sctp{false};
 
     srtp_transport_base::on_new_ssrc_callback_type _on_new_ssrc_cb{};
-    srtp_transport_base::on_rtp_rtcp_packet_callback_type _on_rtp_rtcp_cb{};
 
     std::optional<any_sender<void>> _ice_connection_state_watcher{};
     std::optional<any_sender<void>> _nack_loop_task{};

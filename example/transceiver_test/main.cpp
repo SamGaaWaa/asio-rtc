@@ -75,6 +75,8 @@ static std::string srtp_suite_name(ssl::srtp_protection_profile profile) {
     }
 }
 
+int recv_count{0};
+
 static void setup_transceivers(connection_impl &conn) {
     {
         auto audio = conn.add_transceiver(
@@ -87,6 +89,16 @@ static void setup_transceivers(connection_impl &conn) {
         std::cout << "Added audio transceiver mid=" << audio->mid()
                   << " dir=" << (int)audio->direction()
                   << " codecs=" << audio->codecs().size() << '\n';
+        audio->receiver()->on_rtp([&](rtp::rtp_packet &pkt) {
+            int n = ++recv_count;
+            std::cout << "audio recv RTP #" << n << " SSRC=0x" << std::hex
+                        << pkt.ssrc << std::dec
+                        << " PT=" << (int)pkt.payload_type
+                        << " seq=" << pkt.sequence_number
+                        << " ts=" << pkt.timestamp
+                        << " payload=" << pkt.payload.size() << "B\n";
+            return true;
+        });
     }
 
     {
@@ -100,6 +112,16 @@ static void setup_transceivers(connection_impl &conn) {
         std::cout << "Added video transceiver mid=" << video->mid()
                   << " dir=" << (int)video->direction()
                   << " codecs=" << video->codecs().size() << '\n';
+        video->receiver()->on_rtp([&](rtp::rtp_packet &pkt) {
+            int n = ++recv_count;
+            std::cout << "video recv RTP #" << n << " SSRC=0x" << std::hex
+                        << pkt.ssrc << std::dec
+                        << " PT=" << (int)pkt.payload_type
+                        << " seq=" << pkt.sequence_number
+                        << " ts=" << pkt.timestamp
+                        << " payload=" << pkt.payload.size() << "B\n";
+            return true;
+        });
     }
 
     for (auto &t : conn.transceivers()) {
@@ -178,28 +200,9 @@ static task<void> transceiver_session(net::io_context &ctx, ws_ptr ws) {
 
     auto srtp = conn->srtp();
 
-    int recv_count{0};
     conn->on_new_ssrc([&](uint32_t ssrc, std::span<const uint8_t>) -> bool {
         std::cout << "New SSRC: 0x" << std::hex << ssrc << std::dec << '\n';
         return true;
-    });
-
-    conn->on_rtp_rtcp_packet([&](io_buffer_ptr buf) {
-        auto pkt = rtp::rtp_packet::parse(buf->data(), buf->size());
-        if (pkt) {
-            int n = ++recv_count;
-            std::cout << "RTP recv #" << n << " SSRC=0x" << std::hex
-                      << pkt->ssrc << std::dec
-                      << " PT=" << (int)pkt->payload_type
-                      << " seq=" << pkt->sequence_number
-                      << " ts=" << pkt->timestamp
-                      << " payload=" << pkt->payload.size() << "B\n";
-        } else {
-            auto cp = rtcp::rtcp_packet::parse(buf->data(), buf->size());
-            if (cp)
-                std::cout << "RTCP recv type=" << (int)cp->type
-                          << " len=" << cp->serialized_size() << "B\n";
-        }
     });
 
     std::cout << "Waiting for ICE+DTLS+SRTP setup...\n";

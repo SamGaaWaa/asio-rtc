@@ -52,7 +52,7 @@ struct rtp_receiver_interface {
     rtp_transceiver_interface transceiver() const noexcept;
     const rtp_receive_parameters &parameters() const noexcept;
     const std::shared_ptr<codecs::decoder> &decoder() const noexcept;
-    void set_on_rtp(std::function<bool(rtp::rtp_packet &)> cb);
+    void on_rtp(std::function<bool(rtp::rtp_packet &)> cb);
     operator bool() const noexcept { return _impl != nullptr; }
 
   private:

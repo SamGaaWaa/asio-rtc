@@ -60,8 +60,8 @@ static task<nlohmann::json> ws_recv(ws_t &ws) {
 
 static task<void> sfw_session(net::io_context &ctx, ws_ptr ws) {
     asioice::utils::scope_guard on_exit(
-        []() noexcept { std::cout << "sfw_session: exited\n"; });
-    std::cout << "WS connected (asiortc sfw demo)\n";
+        []() noexcept { std::cout << "sfu_session: exited\n"; });
+    std::cout << "WS connected (asiortc sfu demo)\n";
 
     utils::scheduler sched{ctx};
     exec::async_scope scope;
@@ -138,7 +138,7 @@ static task<void> sfw_session(net::io_context &ctx, ws_ptr ws) {
     std::cout << "SFU: sender ssrc=" << send.ssrc(0)
               << " num_streams=" << send.num_streams() << '\n';
 
-    tr.receiver().set_on_rtp([&](rtp::rtp_packet &pkt) {
+    tr.receiver().on_rtp([&](rtp::rtp_packet &pkt) {
         sfw_queue.push(pkt);
         return false;
     });

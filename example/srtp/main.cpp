@@ -187,7 +187,8 @@ static task<void> srtp_session(net::io_context &ctx, ws_ptr ws) {
 
     auto conn = std::make_shared<connection_impl>(ctx.get_executor());
 
-    conn->on_track([](std::shared_ptr<rtp_receiver> receiver,
+    int recv_count{0};
+    conn->on_track([&recv_count](std::shared_ptr<rtp_receiver> receiver,
                       std::shared_ptr<media_track> track,
                       std::vector<std::string> msids,
                       std::shared_ptr<rtp_transceiver> transceiver) {
@@ -195,6 +196,17 @@ static task<void> srtp_session(net::io_context &ctx, ws_ptr ws) {
                   << (track->kind() == media_kind::audio ? "audio" : "video")
                   << " id=" << track->id() << " mid=" << transceiver->mid()
                   << " msids=" << msids.size() << '\n';
+        receiver->on_rtp([&](rtp::rtp_packet &pkt) {
+            int n = ++recv_count;
+            std::cout << "RTP recv #" << n << " SSRC=0x" << std::hex
+                        << pkt.ssrc << std::dec
+                        << " PT=" << (int)pkt.payload_type
+                        << " seq=" << pkt.sequence_number
+                        << " ts=" << pkt.timestamp
+                        << " marker=" << (int)pkt.marker
+                        << " payload=" << pkt.payload.size() << "B\n";
+            return true;
+        });
     });
 
     co_await conn->set_remote_description(std::move(offer));
@@ -232,26 +244,9 @@ static task<void> srtp_session(net::io_context &ctx, ws_ptr ws) {
 
     auto srtp = conn->srtp();
 
-    int recv_count{0};
     conn->on_new_ssrc([&](uint32_t ssrc, std::span<const uint8_t>) -> bool {
         std::cout << "New SSRC: 0x" << std::hex << ssrc << std::dec << '\n';
         return true;
-    });
-
-    conn->on_rtp_rtcp_packet([&](io_buffer_ptr buf) {
-        auto pkt = rtp::rtp_packet::parse(buf->data(), buf->size());
-        if (pkt) {
-            int n = ++recv_count;
-            std::cout << "RTP recv #" << n << " SSRC=0x" << std::hex
-                      << pkt->ssrc << std::dec
-                      << " PT=" << (int)pkt->payload_type
-                      << " seq=" << pkt->sequence_number
-                      << " ts=" << pkt->timestamp
-                      << " marker=" << (int)pkt->marker
-                      << " payload=" << pkt->payload.size() << "B\n";
-        } else {
-            std::cout << "RTP parse failed\n";
-        }
     });
 
     std::cout << "Waiting for ICE+DTLS+SRTP setup...\n";

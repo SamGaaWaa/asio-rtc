@@ -1,10 +1,63 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <vector>
 
 namespace asiortc::rtp {
+
+struct rtp_ext_element {
+    uint8_t id = 0;
+    uint8_t length = 0;
+    const uint8_t *data = nullptr;
+};
+
+struct rtp_ext_sentinel {
+    rtp_ext_sentinel() noexcept : _end{nullptr} {}
+    explicit rtp_ext_sentinel(const void *end) noexcept
+        : _end{static_cast<const uint8_t *>(end)} {}
+
+  private:
+    friend struct rtp_ext_iterator;
+    const uint8_t *_end;
+};
+
+struct rtp_ext_iterator {
+    using difference_type = std::ptrdiff_t;
+    using value_type = rtp_ext_element;
+
+    rtp_ext_iterator(const void *begin) noexcept
+        : _current{(const uint8_t *)begin} {}
+
+    rtp_ext_element operator*() const noexcept {
+        uint8_t hdr = *_current;
+        uint8_t len = _size();
+        return {(uint8_t)((hdr >> 4) & 0xF), len,
+                len > 0 ? _current + 1 : (uint8_t *)0};
+    }
+
+    rtp_ext_iterator &operator++() noexcept {
+        uint8_t len = _size();
+        _current += 1 + len;
+        return *this;
+    }
+
+    rtp_ext_iterator operator++(int) noexcept {
+        auto tmp = *this;
+        ++*this;
+        return tmp;
+    }
+
+    bool operator==(const rtp_ext_sentinel &s) const noexcept {
+        return _current >= s._end || _current + _size() + 1 > s._end;
+    }
+
+  private:
+    uint8_t _size() const noexcept { return (*_current & 0xF) + 1; }
+
+    const uint8_t *_current;
+};
 
 bool is_rtp_packet(const uint8_t *data, std::size_t len) noexcept;
 

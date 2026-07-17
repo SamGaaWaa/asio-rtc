@@ -542,7 +542,8 @@ asiortc::task<void> connection_impl::do_connect() {
     }
     _ice_send_loop =
         stdexec::spawn_future(this->ice_send_loop(), _scope.get_token());
-    _periodic_cleaning_task = stdexec::spawn_future(this->periodic_cleaning_loop(), _scope.get_token());
+    _periodic_cleaning_task = stdexec::spawn_future(
+        this->periodic_cleaning_loop(), _scope.get_token());
 
     auto setup_str = setup_from(*_remote_desc);
     bool we_are_active = (setup_str != "active");
@@ -1522,25 +1523,18 @@ void connection_impl::do_on_rtp_rtcp_packet(asioice::io_buffer_ptr buf) {
 
         if (!pkt->extension_data.empty()) {
             const auto &ext = pkt->extension_data;
-            size_t off = 0;
-            while (off + 1 <= ext.size()) {
-                uint8_t hdr = ext[off];
-                if (hdr == 0) {
-                    off++;
-                    continue;
-                }
-                uint8_t id = (hdr >> 4) & 0xF;
-                uint8_t len = (hdr & 0xF) + 1;
+            rtp::rtp_ext_iterator iter{ext.data()};
+            rtp::rtp_ext_sentinel end{ext.data() + ext.size()};
+            for (; iter != end; ++iter) {
+                auto e = *iter;
                 if (_mid_ext_id > 0 &&
-                    id == static_cast<uint8_t>(_mid_ext_id) &&
-                    off + 1 + len <= ext.size()) {
-                    std::string mid(
-                        reinterpret_cast<const char *>(&ext[off + 1]), len);
+                    e.id == static_cast<uint8_t>(_mid_ext_id)) {
+                    std::string mid(reinterpret_cast<const char *>(e.data),
+                                    e.length);
                     auto mit = _mid_track_map.find(mid);
                     if (mit != _mid_track_map.end())
                         mid_track = mit->second;
                 }
-                off += 1 + len;
             }
         }
 
@@ -1835,8 +1829,6 @@ bool connection_impl::sync_send_rtcp(std::span<const uint8_t> data) noexcept {
     return _send_buf.try_write(enc);
 }
 
-asiortc::task<void> connection_impl::periodic_cleaning_loop() {
-    co_return;
-}
+asiortc::task<void> connection_impl::periodic_cleaning_loop() { co_return; }
 
 } // namespace asiortc

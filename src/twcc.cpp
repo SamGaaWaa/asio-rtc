@@ -1,6 +1,7 @@
 #include "twcc.hpp"
 
 #include "asioice/detail/binary.hpp"
+#include "asiortc/rtp.hpp"
 #include "rtcp.hpp"
 
 #include <algorithm>
@@ -10,21 +11,15 @@ namespace asiortc {
 
 static constexpr uint16_t max_tcc_count = 100;
 
-void transport_cc::handle_incoming(std::span<const uint8_t> extension_data,
+void transport_cc::handle_incoming(std::span<const uint8_t> ext_data,
                                    transport_cc::send_callback cb) {
-    size_t off = 0;
-    while (off < extension_data.size()) {
-        uint8_t hdr = extension_data[off];
-        if (hdr == 0) {
-            off++;
-            continue;
-        }
-        uint8_t id = (hdr >> 4) & 0xF;
-        uint8_t len = (hdr & 0xF) + 1;
-        if (id == 4 && off + 1 + len <= extension_data.size()) {
-            uint16_t seq =
-                (static_cast<uint16_t>(extension_data[off + 1]) << 8) |
-                static_cast<uint16_t>(extension_data[off + 2]);
+    rtp::rtp_ext_iterator iter{ext_data.data()};
+    rtp::rtp_ext_sentinel end{ext_data.data() + ext_data.size()};
+    for (; iter != end; ++iter) {
+        auto ext = *iter;
+        if (ext.id == 4 && ext.length == 2) {
+            uint16_t seq = (static_cast<uint16_t>(ext.data[0]) << 8) |
+                           static_cast<uint16_t>(ext.data[1]);
             _entry e{seq, std::chrono::steady_clock::now()};
             auto it = std::lower_bound(
                 _recv.begin(), _recv.end(), e, [](auto &a, auto &b) {
@@ -33,7 +28,6 @@ void transport_cc::handle_incoming(std::span<const uint8_t> extension_data,
             if (it == _recv.end() || it->seq != e.seq)
                 _recv.insert(it, e);
         }
-        off += 1 + len;
     }
     while (_recv.size() > 200) {
         auto data = report();

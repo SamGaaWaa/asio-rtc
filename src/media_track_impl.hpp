@@ -29,6 +29,7 @@ struct media_track_impl : public media_track {
     asiortc::task<std::optional<media_frame>> recv() override;
 
     void push_frame(rtp::rtp_packet pkt);
+    void push_rtx_packet(rtp::rtp_packet pkt);
     asiortc::task<std::optional<rtp::rtp_packet>> recv_packet();
 
   private:

@@ -1,6 +1,7 @@
 #include "media_track_impl.hpp"
 
 #include "asioice/detail/asio2exec.hpp"
+#include "asioice/detail/binary.hpp"
 
 #include <chrono>
 #include <optional>
@@ -17,6 +18,14 @@ void media_track_impl::stop() { _state = track_state::ended; }
 void media_track_impl::push_frame(rtp::rtp_packet pkt) {
     _jitter.push(std::move(pkt));
     _on_frame.set_one_value();
+}
+
+void media_track_impl::push_rtx_packet(rtp::rtp_packet pkt) {
+    uint16_t osn = asioice::binary::ntoh<uint16_t>(
+        *reinterpret_cast<const uint16_t *>(pkt.payload.data()));
+    pkt.payload.erase(pkt.payload.begin(), pkt.payload.begin() + 2);
+    pkt.sequence_number = osn;
+    push_frame(std::move(pkt));
 }
 
 asiortc::task<std::optional<rtp::rtp_packet>> media_track_impl::recv_packet() {

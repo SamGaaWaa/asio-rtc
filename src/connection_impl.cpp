@@ -1723,12 +1723,11 @@ bool connection_impl::dispatch_rtp(rtp::rtp_packet &pkt) noexcept {
     }
 
     if (codec->name == "rtx" && pkt.payload.size() >= 2) {
-        pkt.sequence_number = asioice::binary::ntoh<uint16_t>(
-            *reinterpret_cast<const uint16_t *>(pkt.payload.data()));
-        pkt.payload.erase(pkt.payload.begin(), pkt.payload.begin() + 2);
-    } else {
-        pkt.payload = depayload(codec->name, std::move(pkt.payload));
+        track->push_rtx_packet(std::move(pkt));
+        return true;
     }
+
+    pkt.payload = depayload(codec->name, std::move(pkt.payload));
 
     if (pkt.payload.empty())
         return false;

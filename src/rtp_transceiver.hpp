@@ -9,10 +9,12 @@
 #include "asiortc/rtp_parameters.hpp"
 #include "asiortc/codecs/base.hpp"
 #include "rtp_stream.hpp"
+#include "ssrc_context.hpp"
 #include "asiortc/rtp.hpp"
 #include "sdp.hpp"
 
 #include <functional>
+#include <list>
 
 namespace asiortc {
 
@@ -81,6 +83,11 @@ struct rtp_sender : std::enable_shared_from_this<rtp_sender> {
 struct rtp_receiver : std::enable_shared_from_this<rtp_receiver> {
     rtp_receiver() noexcept = default;
 
+    rtp_receiver(const rtp_receiver &) = delete;
+    rtp_receiver(rtp_receiver &&) = delete;
+    rtp_receiver &operator=(const rtp_receiver &) = delete;
+    rtp_receiver &operator=(rtp_receiver &&) = delete;
+
     const std::string &mid() const noexcept { return _mid; }
 
     const std::shared_ptr<media_track> &track() const noexcept {
@@ -108,6 +115,10 @@ struct rtp_receiver : std::enable_shared_from_this<rtp_receiver> {
     void on_rtp(std::function<bool(rtp::rtp_packet &)> cb) {
         _on_rtp_cb = std::move(cb);
     }
+
+    ssrc_context &create_ssrc_context(uint32_t ssrc,
+                                      ssrc_context_set &ssrc_set);
+
   private:
     friend struct rtp_transceiver;
     friend struct connection_impl;
@@ -120,6 +131,7 @@ struct rtp_receiver : std::enable_shared_from_this<rtp_receiver> {
     rtp_receive_parameters _parameters{};
     std::optional<any_sender<void>> _rtcp_loop{};
     std::function<bool(rtp::rtp_packet &)> _on_rtp_cb;
+    std::list<ssrc_context> _ssrcs{};
 };
 
 std::vector<sdp_codec> default_video_codecs();

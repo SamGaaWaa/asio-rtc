@@ -512,8 +512,15 @@ void connection_impl::_rebuild_pt_maps() {
                 continue;
             for (const auto &ssrc_line : rm.ssrcs) {
                 auto ssrc = parse_ssrc_value(ssrc_line);
-                if (ssrc)
-                    _ssrc_track_map.try_emplace(*ssrc, mit->second);
+                if (ssrc) {
+                    auto tit =
+                        std::ranges::find_if(_transceivers, [&](auto &tr) {
+                            return tr->mid() == rm.mid;
+                        });
+                    if (tit != _transceivers.end())
+                        (*tit)->receiver()->create_ssrc_context(*ssrc,
+                                                                _ssrc_set);
+                }
             }
         }
     }
@@ -1145,44 +1152,36 @@ asiortc::task<void> connection_impl::_receiver_rtcp_loop(
         if (ec)
             co_return;
 
-        // Build RR for SSRCs belonging to this receiver's track
+        // Build RR for SSRCs belonging to this receiver
         std::vector<uint8_t> compound;
-        for (auto &[ssrc, st] : this->_stream_stats) {
-            if (st.packets_received == 0)
+        for (auto &ctx : this->_ssrc_set) {
+            if (&ctx.receiver() != receiver.get())
+                continue;
+            if (ctx.packets_received_count() == 0)
                 continue;
 
-            // Only report on SSRCs associated with this receiver's track
-            auto it_track = this->_ssrc_track_map.find(ssrc);
-            if (it_track == this->_ssrc_track_map.end() ||
-                it_track->second != track)
-                continue;
-
-            uint32_t extended_max = st.cycles + st.max_seq;
+            uint32_t extended_max = ctx.extended_max();
             uint32_t expected_interval =
-                st.packets_expected - st.expected_prior;
+                ctx.packets_expected_count() - ctx.expected_prior();
             uint32_t received_interval =
-                st.packets_received - st.received_prior;
-            int lost_interval = static_cast<int>(expected_interval) -
-                                static_cast<int>(received_interval);
-            uint8_t fraction = 0;
-            if (expected_interval > 0 && lost_interval > 0)
-                fraction = static_cast<uint8_t>((lost_interval << 8) /
-                                                expected_interval);
+                ctx.packets_received_count() - ctx.received_prior();
+            uint8_t fraction = ctx.fraction_lost();
             int32_t cumulative_lost =
-                static_cast<int32_t>(st.packets_expected) -
-                static_cast<int32_t>(st.packets_received);
+                static_cast<int32_t>(ctx.packets_expected_count()) -
+                static_cast<int32_t>(ctx.packets_received_count());
             if (cumulative_lost < 0)
                 cumulative_lost = 0;
             if (cumulative_lost > 0x7FFFFF)
                 cumulative_lost = 0x7FFFFF;
 
-            uint32_t jitter = static_cast<uint32_t>(st.jitter_q4 >> 4);
-            uint32_t lsr = static_cast<uint32_t>((st.lsr >> 16) & 0xFFFFFFFF);
+            uint32_t jitter = static_cast<uint32_t>(ctx.jitter_q4() >> 4);
+            uint32_t lsr =
+                static_cast<uint32_t>((ctx.lsr() >> 16) & 0xFFFFFFFF);
             uint32_t dlsr = 0;
-            if (st.lsr != 0) {
+            if (ctx.lsr() != 0) {
                 auto elapsed =
                     std::chrono::duration_cast<std::chrono::microseconds>(
-                        std::chrono::steady_clock::now() - st.lsr_time)
+                        std::chrono::steady_clock::now() - ctx.lsr_time())
                         .count();
                 double d = elapsed / 1000000.0;
                 if (d > 0 && d < 65536)
@@ -1194,7 +1193,7 @@ asiortc::task<void> connection_impl::_receiver_rtcp_loop(
             rr_pkt.report_count = 1;
             rr_pkt.ssrc = 0;
             rtcp::report_block rb;
-            rb.ssrc = ssrc;
+            rb.ssrc = ctx.ssrc();
             rb.fraction_lost = fraction;
             rb.cumulative_lost = cumulative_lost;
             rb.ext_highest_seq = extended_max;
@@ -1206,8 +1205,7 @@ asiortc::task<void> connection_impl::_receiver_rtcp_loop(
             rr_pkt.write_to(rr_buf.data(), rr_buf.size());
             compound.insert(compound.end(), rr_buf.begin(), rr_buf.end());
 
-            st.expected_prior = st.packets_expected;
-            st.received_prior = st.packets_received;
+            ctx.advance_prior();
         }
 
         if (compound.empty())
@@ -1224,7 +1222,6 @@ asiortc::task<void> connection_impl::_receiver_rtcp_loop(
 
 asiortc::task<void> connection_impl::_nack_loop() {
     net::steady_timer timer(this->get_executor());
-    std::vector<uint16_t> nacks;
     while (true) {
         timer.expires_after(std::chrono::milliseconds(20));
         auto ec = co_await timer.async_wait(asioice::utils::use_sender);
@@ -1235,12 +1232,13 @@ asiortc::task<void> connection_impl::_nack_loop() {
         auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                           now.time_since_epoch())
                           .count();
-        for (auto &[ssrc, gen] : _nack_gens) {
-            gen.get_nacks(now_ms, nacks);
+        std::vector<uint16_t> nacks;
+        for (auto &ctx : _ssrc_set) {
+            ctx._nack_gen.get_nacks(now_ms, nacks);
             if (!nacks.empty()) {
                 auto nack_bytes =
-                    rtcp::rtcp_rtpfb{rtcp::packet_type::RTPFB_NACK, 0, ssrc,
-                                     std::move(nacks)}
+                    rtcp::rtcp_rtpfb{rtcp::packet_type::RTPFB_NACK, 0,
+                                     ctx.ssrc(), std::move(nacks)}
                         .bytes();
                 this->sync_send_rtcp(nack_bytes);
             }
@@ -1329,6 +1327,10 @@ void connection_impl::close() noexcept {
     _agent.close();
     _ice_send_loop.reset();
     _periodic_cleaning_task.reset();
+    while (!_ssrc_set.empty()) {
+        auto it = _ssrc_set.begin();
+        it->unlink();
+    }
     if (_data_channel_manager)
         _data_channel_manager->stop();
     _ice_transport.reset();
@@ -1343,11 +1345,9 @@ void connection_impl::close() noexcept {
     for (auto &t : _transceivers)
         t->stop();
     _transceivers.clear();
-    _ssrc_track_map.clear();
     _pt_codec_map.clear();
     _pt_receiver_map.clear();
     _mid_track_map.clear();
-    _nack_gens.clear();
     _nack_loop_task.reset();
     _mid_ext_id = 0;
 
@@ -1460,22 +1460,22 @@ rtc_stats_report connection_impl::get_stats() const {
     }
 
     // Inbound stats per SSRC
-    for (auto &[ssrc, st] : _stream_stats) {
+    for (auto &ctx : _ssrc_set) {
         auto is = std::make_shared<rtc_inbound_rtp_stream_stats>();
         is->timestamp = now;
         is->type = "inbound-rtp";
+        auto ssrc = ctx.ssrc();
         is->id = "inbound-rtp_" + std::to_string(ssrc);
         is->ssrc = ssrc;
-        auto it = _ssrc_track_map.find(ssrc);
-        is->kind = (it != _ssrc_track_map.end() &&
-                    it->second->kind() == media_kind::video)
+        is->kind = (ctx.receiver().track() &&
+                    ctx.receiver().track()->kind() == media_kind::video)
                        ? "video"
                        : "audio";
         is->transport_id = _transport_stats_id;
-        is->packets_received = st.packets_received;
-        is->packets_lost =
-            static_cast<int64_t>(st.packets_expected) - st.packets_received;
-        is->jitter = static_cast<uint32_t>(st.jitter_q4 >> 4);
+        is->packets_received = ctx.packets_received_count();
+        is->packets_lost = static_cast<int64_t>(ctx.packets_expected_count()) -
+                           ctx.packets_received_count();
+        is->jitter = static_cast<uint32_t>(ctx.jitter_q4() >> 4);
         report[is->id] = is;
     }
 
@@ -1483,10 +1483,11 @@ rtc_stats_report connection_impl::get_stats() const {
     for (auto &[ssrc, ro] : _remote_outbound_stats) {
         auto s = std::make_shared<rtc_remote_outbound_rtp_stream_stats>(ro);
         s->kind = "audio";
-        auto it = _ssrc_track_map.find(ssrc);
-        if (it != _ssrc_track_map.end())
-            s->kind =
-                it->second->kind() == media_kind::video ? "video" : "audio";
+        auto ctx_it = _ssrc_set.find(ssrc);
+        if (ctx_it != _ssrc_set.end()) {
+            auto t = ctx_it->receiver().track();
+            s->kind = (t && t->kind() == media_kind::video) ? "video" : "audio";
+        }
         s->transport_id = _transport_stats_id;
         s->id = "remote-outbound-rtp_" + std::to_string(ssrc);
         report[s->id] = s;
@@ -1496,10 +1497,11 @@ rtc_stats_report connection_impl::get_stats() const {
     for (auto &[ssrc, ri] : _remote_inbound_stats) {
         auto s = std::make_shared<rtc_remote_inbound_rtp_stream_stats>(ri);
         s->kind = "audio";
-        auto it = _ssrc_track_map.find(ssrc);
-        if (it != _ssrc_track_map.end())
-            s->kind =
-                it->second->kind() == media_kind::video ? "video" : "audio";
+        auto ctx_it = _ssrc_set.find(ssrc);
+        if (ctx_it != _ssrc_set.end()) {
+            auto t = ctx_it->receiver().track();
+            s->kind = (t && t->kind() == media_kind::video) ? "video" : "audio";
+        }
         s->transport_id = _transport_stats_id;
         s->id = "remote-inbound-rtp_" + std::to_string(ssrc);
         report[s->id] = s;
@@ -1513,7 +1515,6 @@ void connection_impl::do_on_rtp_rtcp_packet(asioice::io_buffer_ptr buf) {
     _rx_bytes += buf->size();
     auto pkt = rtp::rtp_packet::parse(buf->data(), buf->size());
     if (pkt) {
-        std::shared_ptr<media_track_impl> mid_track = nullptr;
 
         _twcc.set_media_ssrc(pkt->ssrc);
         _twcc.handle_incoming(pkt->extension_data,
@@ -1521,138 +1522,15 @@ void connection_impl::do_on_rtp_rtcp_packet(asioice::io_buffer_ptr buf) {
                                   this->sync_send_rtcp(report);
                               });
 
-        if (!pkt->extension_data.empty()) {
-            const auto &ext = pkt->extension_data;
-            rtp::rtp_ext_iterator iter{ext.data()};
-            rtp::rtp_ext_sentinel end{ext.data() + ext.size()};
-            for (; iter != end; ++iter) {
-                auto e = *iter;
-                if (_mid_ext_id > 0 &&
-                    e.id == static_cast<uint8_t>(_mid_ext_id)) {
-                    std::string mid(reinterpret_cast<const char *>(e.data),
-                                    e.length);
-                    auto mit = _mid_track_map.find(mid);
-                    if (mit != _mid_track_map.end())
-                        mid_track = mit->second;
-                }
-            }
-        }
-
-        // Track stream statistics for RTCP RR
-        auto &st = _stream_stats[pkt->ssrc];
-        st.ssrc = pkt->ssrc;
-        uint32_t prev_expected = st.packets_expected;
-        if (!st.base_seq_set) {
-            st.base_seq = pkt->sequence_number;
-            st.base_seq_set = true;
-        }
-        if (pkt->sequence_number < st.max_seq) {
-            if (st.max_seq - pkt->sequence_number > 0x8000)
-                st.cycles += 0x10000;
-        }
-        st.max_seq = std::max<uint32_t>(st.max_seq, pkt->sequence_number);
-        st.packets_expected = st.cycles + st.max_seq - st.base_seq + 1;
-        st.packets_received++;
-
-        auto now = std::chrono::steady_clock::now();
-        auto arr_ts = static_cast<uint32_t>(
-            std::chrono::duration_cast<std::chrono::microseconds>(
-                now.time_since_epoch())
-                .count() /
-            1000 * 90);
-        if (st.last_arrival_ts != 0) {
-            int transit = static_cast<int>(arr_ts - st.last_arrival_ts) -
-                          static_cast<int>(pkt->timestamp - st.last_rtp_ts);
-            if (transit < 0)
-                transit = -transit;
-            st.jitter_q4 += transit - ((st.jitter_q4 + 8) >> 4);
-        }
-        st.last_arrival_ts = arr_ts;
-        st.last_rtp_ts = pkt->timestamp;
-
-        // PLI + NACK trigger: gap detection
-        uint32_t expected = st.base_seq_set ? st.cycles + st.base_seq +
-                                                  (prev_expected % 0x10000)
-                                            : pkt->sequence_number;
-        if (st.base_seq_set &&
-            pkt->sequence_number != static_cast<uint16_t>(expected)) {
-            st.consecutive_lost++;
-
-            if (st.consecutive_lost >= 3 && _srtp_transport) {
-                auto pli =
-                    rtcp::rtcp_psfb{rtcp::packet_type::PSFB_PLI, 0, pkt->ssrc}
-                        .bytes();
-                this->sync_send_rtcp(pli);
-                st.consecutive_lost = 0;
-            }
-        } else {
-            st.consecutive_lost = 0;
-        }
-
-        _nack_gens[pkt->ssrc].receive_packet(pkt->sequence_number);
-
-        // Three-tier demux: MID -> SSRC -> PT
-        auto to_push = [&](std::shared_ptr<media_track_impl> track) {
-            auto *codec = _find_codec(pkt->payload_type);
-            if (!codec)
-                return;
-
-            bool is_new =
-                (_ssrc_track_map.find(pkt->ssrc) == _ssrc_track_map.end());
-            if (is_new)
-                _ssrc_track_map[pkt->ssrc] = track;
-
-            if (!track->_decoder && !track->_decoder_codec_name.empty()) {
-                auto dit = _decoder_registry.find(track->_decoder_codec_name);
-                if (dit != _decoder_registry.end())
-                    track->_decoder = dit->second();
-            }
-
-            {
-                auto pt_it = _pt_receiver_map.find(pkt->payload_type);
-                if (pt_it != _pt_receiver_map.end()) {
-                    auto &recv = pt_it->second.receiver;
-                    if (recv && recv->_on_rtp_cb) {
-                        if (!recv->_on_rtp_cb(*pkt))
-                            return;
-                    }
-                }
-            }
-
-            if (codec->name == "rtx" && pkt->payload.size() >= 2) {
-                pkt->sequence_number = asioice::binary::ntoh<uint16_t>(
-                    *reinterpret_cast<const uint16_t *>(pkt->payload.data()));
-                pkt->payload.erase(pkt->payload.begin(),
-                                   pkt->payload.begin() + 2);
-            } else {
-                pkt->payload = depayload(codec->name, std::move(pkt->payload));
-            }
-
-            if (pkt->payload.empty())
-                return;
-
-            track->push_frame(std::move(*pkt));
-        };
-
-        if (mid_track) {
-            to_push(mid_track);
-        } else if (auto it = _ssrc_track_map.find(pkt->ssrc);
-                   it != _ssrc_track_map.end()) {
-            to_push(it->second);
-        } else if (auto pt_it = _pt_receiver_map.find(pkt->payload_type);
-                   pt_it != _pt_receiver_map.end()) {
-            if (pt_it->second.codec_name != "rtx")
-                to_push(pt_it->second.track);
-        }
+        dispatch_rtp(*pkt);
     } else {
         // Handle compound RTCP
         auto cps = rtcp::parse_compound(buf->data(), buf->size());
         for (const auto &cp : cps) {
             if (cp.type == rtcp::packet_type::SR) {
-                auto &st = _stream_stats[cp.ssrc];
-                st.ssrc = cp.ssrc;
-                st.lsr = cp.ntp_timestamp;
-                st.lsr_time = std::chrono::steady_clock::now();
+                auto ctx_it = _ssrc_set.find(cp.ssrc);
+                if (ctx_it != _ssrc_set.end())
+                    ctx_it->record_sr(cp.ntp_timestamp);
 
                 auto &ro = _remote_outbound_stats[cp.ssrc];
                 ro.timestamp = std::chrono::system_clock::now();
@@ -1672,18 +1550,19 @@ void connection_impl::do_on_rtp_rtcp_packet(asioice::io_buffer_ptr buf) {
                     ri.fraction_lost = b.fraction_lost / 256.0;
                     if (b.lsr && b.dlsr) {
                         auto now = std::chrono::steady_clock::now();
-                        auto it = _stream_stats.find(b.ssrc);
-                        if (it != _stream_stats.end() &&
-                            it->second.lsr_time.time_since_epoch().count() >
-                                0) {
+                        auto ctx_it = _ssrc_set.find(b.ssrc);
+                        if (ctx_it != _ssrc_set.end() &&
+                            ctx_it->lsr_time().time_since_epoch().count() > 0) {
                             auto rtt_us = std::chrono::duration_cast<
                                               std::chrono::microseconds>(
-                                              now - it->second.lsr_time)
+                                              now - ctx_it->lsr_time())
                                               .count() -
                                           (static_cast<int64_t>(b.dlsr) *
                                            1000000 / 65536);
-                            if (rtt_us > 0)
+                            if (rtt_us > 0) {
                                 ri.round_trip_time = rtt_us / 1000000.0;
+                                ctx_it->_nack_gen.update_rtt(rtt_us / 1000);
+                            }
                         }
                     }
                 }
@@ -1769,6 +1648,93 @@ void connection_impl::do_on_rtp_rtcp_packet(asioice::io_buffer_ptr buf) {
             }
         }
     }
+}
+
+bool connection_impl::dispatch_rtp(rtp::rtp_packet &pkt) noexcept {
+    rtp_receiver *receiver = nullptr;
+    if (!pkt.extension_data.empty() && _mid_ext_id > 0) {
+        const auto &ext = pkt.extension_data;
+        rtp::rtp_ext_iterator iter{ext.data()};
+        rtp::rtp_ext_sentinel end{ext.data() + ext.size()};
+
+        std::string_view mid{};
+        for (; iter != end; ++iter) {
+            auto e = *iter;
+            if (e.id == static_cast<uint8_t>(_mid_ext_id)) {
+                mid = std::string_view(reinterpret_cast<const char *>(e.data),
+                                       e.length);
+                break;
+            }
+        }
+        if (!mid.empty()) {
+            auto it = std::ranges::find_if(_transceivers, [&](const auto &tr) {
+                return tr->mid() == mid;
+            });
+            if (it != _transceivers.end())
+                receiver = (*it)->_receiver.get();
+        }
+    }
+    if (!receiver) {
+        auto it = _ssrc_set.find(pkt.ssrc);
+        if (it != _ssrc_set.end())
+            receiver = &it->receiver();
+    }
+    if (!receiver)
+        return false;
+
+    auto ctx_it = _ssrc_set.find(pkt.ssrc);
+    if (ctx_it != _ssrc_set.end()) {
+        auto &ctx = *ctx_it;
+        uint32_t prev = ctx.packets_expected_count();
+        ctx.track_packet(pkt.sequence_number, pkt.timestamp);
+
+        if (ctx.check_gap(prev)) {
+            ctx.inc_consecutive_lost();
+            ctx._nack_gen.receive_packet(pkt.sequence_number);
+
+            if (ctx.consecutive_lost() >= 3 && _srtp_transport) {
+                auto pli =
+                    rtcp::rtcp_psfb{rtcp::packet_type::PSFB_PLI, 0, pkt.ssrc}
+                        .bytes();
+                this->sync_send_rtcp(pli);
+                ctx.reset_consecutive_lost();
+            }
+        } else {
+            ctx.reset_consecutive_lost();
+            ctx._nack_gen.receive_packet(pkt.sequence_number);
+        }
+    }
+
+    if (receiver->_on_rtp_cb && !receiver->_on_rtp_cb(pkt))
+        return false;
+
+    auto track = std::static_pointer_cast<media_track_impl>(receiver->track());
+    if (!track)
+        return false;
+
+    auto *codec = _find_codec(pkt.payload_type);
+    if (!codec)
+        return false;
+
+    if (!track->_decoder && !track->_decoder_codec_name.empty()) {
+        auto dit = _decoder_registry.find(track->_decoder_codec_name);
+        if (dit != _decoder_registry.end())
+            track->_decoder = dit->second();
+    }
+
+    if (codec->name == "rtx" && pkt.payload.size() >= 2) {
+        pkt.sequence_number = asioice::binary::ntoh<uint16_t>(
+            *reinterpret_cast<const uint16_t *>(pkt.payload.data()));
+        pkt.payload.erase(pkt.payload.begin(), pkt.payload.begin() + 2);
+    } else {
+        pkt.payload = depayload(codec->name, std::move(pkt.payload));
+    }
+
+    if (pkt.payload.empty())
+        return false;
+
+    track->push_frame(std::move(pkt));
+    return true;
 }
 
 bool connection_impl::do_on_new_ssrc(uint32_t ssrc,

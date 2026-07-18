@@ -316,4 +316,21 @@ const std::shared_ptr<codecs::decoder> &rtp_receiver::decoder() const noexcept {
     return empty;
 }
 
+ssrc_context &rtp_receiver::create_ssrc_context(uint32_t ssrc,
+                                                ssrc_context_set &ssrc_set) {
+    auto it = ssrc_set.lower_bound(ssrc);
+    if (it != ssrc_set.end() && it->ssrc() == ssrc)
+        return *it;
+    for (auto &ctx : _ssrcs) {
+        if (ctx.ssrc() == ssrc) {
+            ctx.reset_stats();
+            ssrc_set.insert(it, ctx);
+            return ctx;
+        }
+    }
+    _ssrcs.emplace_back(*this, ssrc);
+    ssrc_set.insert(it, _ssrcs.back());
+    return _ssrcs.back();
+}
+
 } // namespace asiortc

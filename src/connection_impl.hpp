@@ -73,24 +73,6 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
     using decoder_factory = std::function<std::shared_ptr<codecs::decoder>()>;
     using decoder_registry = std::unordered_map<std::string, decoder_factory>;
 
-    struct _remote_stream_stats {
-        uint32_t ssrc = 0;
-        uint32_t max_seq = 0;
-        uint32_t cycles = 0;
-        uint32_t base_seq = 0;
-        bool base_seq_set = false;
-        uint32_t packets_expected = 0;
-        uint32_t packets_received = 0;
-        uint32_t expected_prior = 0;
-        uint32_t received_prior = 0;
-        int jitter_q4 = 0;
-        uint32_t last_arrival_ts = 0;
-        uint32_t last_rtp_ts = 0;
-        uint64_t lsr = 0;
-        int consecutive_lost = 0;
-        std::chrono::steady_clock::time_point lsr_time{};
-    };
-
     connection_impl(executor_type ex, asiortc::configuration cfg = {});
 
     connection_impl(const connection_impl &) = delete;
@@ -248,6 +230,8 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
 
     asiortc::task<void> periodic_cleaning_loop();
 
+    bool dispatch_rtp(rtp::rtp_packet &pkt) noexcept;
+
     executor_type _executor;
     stdexec::counting_scope _scope{};
     detail::packet_stream _send_buf{1024 * 1024};
@@ -265,11 +249,9 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
     std::shared_ptr<sctp_transport_type> _sctp_transport{};
     std::optional<datachannel_manager_type> _data_channel_manager{};
 
+    ssrc_context_set _ssrc_set{};
     std::vector<std::shared_ptr<rtp_transceiver>> _transceivers{};
 
-    std::unordered_map<uint32_t, std::shared_ptr<media_track_impl>>
-        _ssrc_track_map{};
-    std::unordered_map<uint32_t, _remote_stream_stats> _stream_stats{};
     std::unordered_map<uint8_t, sdp_codec> _pt_codec_map{};
 
     struct _pt_recv_entry {
@@ -305,7 +287,6 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
     std::array<std::optional<_twcc_sent_entry>, TWCC_SENT_SIZE> _twcc_sent{};
 
     transport_cc _twcc;
-    std::unordered_map<uint32_t, nack_generator> _nack_gens;
 
     std::unordered_map<uint32_t, std::chrono::steady_clock::time_point>
         _last_pli_time;

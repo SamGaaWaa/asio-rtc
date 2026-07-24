@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8">
+</head>
+
+<body>
+    <video id="local" autoplay playsinline muted style="width:640px"></video>
+    <video id="loop" autoplay playsinline muted style="width:640px"></video>
+    <pre id="log"></pre>
+    <script>
+        function log(s) {
+            var el = document.getElementById('log');
+            el.textContent += new Date().toISOString() + ' ' + s + '\n';
+            console.log(s);
+        }
+        async function run() {
+            const pc = new RTCPeerConnection();
+            const ws = new WebSocket('ws://localhost:8086/ws');
+            ws.onopen = () => log('WS open');
+
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { width: 1280, height: 720 },
+                    audio: false
+                });
+                log('Camera: ' + stream.getTracks().length + ' tracks');
+                document.getElementById('local').srcObject = stream;
+                stream.getTracks().forEach(t => { pc.addTrack(t, stream); });
+            } catch (e) { log('Camera err: ' + e); }
+
+            pc.ontrack = e => {
+                log('ontrack: kind=' + e.track.kind + ' streams=' + (e.streams ? e.streams.length : 0));
+                document.getElementById('loop').srcObject = e.streams?.[0] || new MediaStream([e.track]);
+            };
+
+            pc.onconnectionstatechange = () => log('conn: ' + pc.connectionState);
+
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+
+            await new Promise(r => {
+                if (pc.iceGatheringState === 'complete') r();
+                else pc.onicegatheringstatechange = () => {
+                    if (pc.iceGatheringState === 'complete') r();
+                };
+            });
+
+            ws.send(JSON.stringify({ type: 'offer', sdp: pc.localDescription.sdp }));
+            log('Offer sent');
+
+            ws.onmessage = async e => {
+                const m = JSON.parse(e.data);
+                if (m.type === 'answer') {
+                    await pc.setRemoteDescription({ type: 'answer', sdp: m.sdp });
+                    pc.getSenders().forEach(sender => {
+                        const params = sender.getParameters();
+                        if (params.encodings.length > 0) {
+                            params.encodings[0].maxBitrate = 4000000;
+                            params.encodings[0].scaleResolutionDownBy = 1;
+                            sender.setParameters(params);
+                        }
+                    });
+                    log('Answer received');
+                }
+            };
+
+            ws.onclose = e => log('WS close: ' + e.code);
+        }
+        run();
+    </script>
+</body>
+
+</html>

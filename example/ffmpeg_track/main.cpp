@@ -744,79 +744,10 @@ static task<void> http_session(net::io_context &ctx,
     http::response<http::string_body> res{http::status::ok, req.version()};
     res.set(http::field::server, "asiortc");
     res.set(http::field::content_type, "text/html");
-    res.body() = R"html(<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>asiortc ffmpeg_track</title>
-<style>
- body{font-family:monospace;background:#111;color:#eee;margin:20px}
- video{width:640px;background:#222;border:1px solid #444}
- h3{margin:0 0 10px}
- #log{margin-top:10px;padding:8px;background:#1a1a1a;max-height:150px;
-      overflow-y:auto;font-size:12px;border:1px solid #333}
-</style>
-</head>
-<body>
-<h3>asiortc ffmpeg_track</h3>
-<video id="cam" autoplay playsinline muted style="width:320px;background:#222;border:1px solid #444;margin-bottom:8px"></video>
-<video id="v" autoplay playsinline muted></video>
-<pre id="log"></pre>
-<script>
-const log=document.getElementById('log');
-const v=document.getElementById('v');
-const cam=document.getElementById('cam');
-let unmuted=false;
-function L(m){log.textContent+=m+'\n';log.scrollTop=log.scrollHeight}
-function T(s){var d=new Date();return d.getHours()+':'+d.getMinutes()+':'+d.getSeconds()+'.'+d.getMilliseconds()+' '+s;}
-document.addEventListener('click',()=>{
- if(!unmuted&&v.srcObject){v.muted=false;unmuted=true;L(T('audio unmuted'));}
-});
-(async()=>{
- let camStream=null;
- try{
-  camStream=await navigator.mediaDevices.getUserMedia({video:true,audio:true});
-  cam.srcObject=camStream;
-  L(T('Camera ready'));
- }catch(x){L('camera skipped: '+x.message);}
-
- const ws=new WebSocket('ws://'+location.host+'/ws');
- const pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});
- var combined=null;
- pc.ontrack=e=>{
-  L(T('TRACK kind='+e.track.kind+' readyState='+e.track.readyState+' mid='+(e.transceiver?e.transceiver.mid:'?')));
-  if(!combined) combined=new MediaStream();
-  combined.addTrack(e.track);
-  v.srcObject=combined;
- };
- pc.oniceconnectionstatechange=()=>L(T('ICE: '+pc.iceConnectionState));
- pc.onconnectionstatechange=()=>L(T('Conn: '+pc.connectionState));
- pc.onsignalingstatechange=()=>L(T('Sig: '+pc.signalingState));
- ws.onopen=async()=>{
-  L(T('WS open, creating offer'));
-  if(camStream) camStream.getTracks().forEach(t=>pc.addTrack(t,camStream));
-  const o=await pc.createOffer();
-  await pc.setLocalDescription(o);
-  await new Promise(r=>{
-   if(pc.iceGatheringState==='complete')r();
-   else pc.addEventListener('icegatheringstatechange',function h(){
-    if(pc.iceGatheringState==='complete'){pc.removeEventListener('icegatheringstatechange',h);r();}});
-  });
-  const full=pc.localDescription;
-  L(T('Sending offer ('+full.sdp.split('\\r\\n').filter(l=>l.startsWith('a=candidate')).length+' cand)'));
-  ws.send(JSON.stringify({type:'offer',sdp:full.sdp}));
- };
- ws.onclose=()=>L(T('WS closed'));
- ws.onmessage=async e=>{
-  const m=JSON.parse(e.data);
-  L(T('Got '+m.type));
-  await pc.setRemoteDescription(new RTCSessionDescription({type:m.type,sdp:m.sdp}));
- };
-})().catch(e=>L('FATAL: '+e));
-</script>
-</body>
-</html>)html";
+    static constexpr char html[] = {
+#embed "index.html"
+        , '\0'};
+    res.body() = html;
     res.prepare_payload();
     co_await http::async_write(sock, res, net::as_tuple(utils::use_sender));
 }

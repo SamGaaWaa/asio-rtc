@@ -146,7 +146,7 @@ static task<void> sfw_session(net::io_context &ctx, ws_ptr ws) {
     scope.spawn(stdexec::starts_on(
         sched,
         [](peer_connection conn, rtp_sender_interface send,
-            auto &sfw_queue) -> task<void> {
+           auto &sfw_queue) -> task<void> {
             while (true) {
                 auto pkt = sfw_queue.try_pop();
                 if (!pkt) {
@@ -190,73 +190,10 @@ static task<void> http_session(net::io_context &ctx,
     } else {
         http::response<http::string_body> res{http::status::ok, req.version()};
         res.set(http::field::content_type, "text/html");
-        res.body() = R"(<!DOCTYPE html>
-<html><head><meta charset="utf-8"></head><body>
-<video id="local" autoplay playsinline muted style="width:640px"></video>
-<video id="loop" autoplay playsinline muted style="width:640px"></video>
-<pre id="log"></pre>
-<script>
-function log(s) { 
-  var el = document.getElementById('log');
-  el.textContent += new Date().toISOString() + ' ' + s + '\n';
-  console.log(s);
-}
-async function run() {
-  const pc = new RTCPeerConnection();
-  const ws = new WebSocket('ws://localhost:8086/ws');
-  ws.onopen = () => log('WS open');
-
-  try {
-     const stream = await navigator.mediaDevices.getUserMedia({
-         video: { width: 1280, height: 720 },
-         audio: false
-     });
-    log('Camera: ' + stream.getTracks().length + ' tracks');
-    document.getElementById('local').srcObject = stream;
-    stream.getTracks().forEach(t => { pc.addTrack(t, stream); });
-  } catch(e) { log('Camera err: ' + e); }
-
-  pc.ontrack = e => {
-    log('ontrack: kind=' + e.track.kind + ' streams=' + (e.streams ? e.streams.length : 0));
-    document.getElementById('loop').srcObject = e.streams?.[0] || new MediaStream([e.track]);
-  };
-
-  pc.onconnectionstatechange = () => log('conn: ' + pc.connectionState);
-
-  const offer = await pc.createOffer();
-  await pc.setLocalDescription(offer);
-
-  await new Promise(r => {
-    if (pc.iceGatheringState === 'complete') r();
-    else pc.onicegatheringstatechange = () => {
-      if (pc.iceGatheringState === 'complete') r();
-    };
-  });
-
-  ws.send(JSON.stringify({type:'offer',sdp:pc.localDescription.sdp}));
-  log('Offer sent');
-
-  ws.onmessage = async e => {
-    const m = JSON.parse(e.data);
-    if (m.type === 'answer') {
-      await pc.setRemoteDescription({type:'answer',sdp:m.sdp});
-      pc.getSenders().forEach(sender => {
-        const params = sender.getParameters();
-        if (params.encodings.length > 0) {
-          params.encodings[0].maxBitrate = 4000000;
-          params.encodings[0].scaleResolutionDownBy = 1;
-          sender.setParameters(params);
-        }
-      });
-      log('Answer received');
-    }
-  };
-
-  ws.onclose = e => log('WS close: ' + e.code);
-}
-run();
-</script>
-</body></html>)";
+        static constexpr char html[] = {
+#embed "index.html"
+            , '\0'};
+        res.body() = html;
         res.prepare_payload();
         auto [sec, _] = co_await http::async_write(
             sock, res, net::as_tuple(utils::use_sender));

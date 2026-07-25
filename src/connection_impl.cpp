@@ -1161,14 +1161,14 @@ asiortc::task<void> connection_impl::_receiver_rtcp_loop(
                 continue;
 
             uint32_t extended_max = ctx.extended_max();
-            uint32_t expected_interval =
+            uint64_t expected_interval =
                 ctx.packets_expected_count() - ctx.expected_prior();
-            uint32_t received_interval =
+            uint64_t received_interval =
                 ctx.packets_received_count() - ctx.received_prior();
             uint8_t fraction = ctx.fraction_lost();
-            int32_t cumulative_lost =
-                static_cast<int32_t>(ctx.packets_expected_count()) -
-                static_cast<int32_t>(ctx.packets_received_count());
+            int64_t cumulative_lost =
+                static_cast<int64_t>(ctx.packets_expected_count()) -
+                static_cast<int64_t>(ctx.packets_received_count());
             if (cumulative_lost < 0)
                 cumulative_lost = 0;
             if (cumulative_lost > 0x7FFFFF)
@@ -1685,7 +1685,7 @@ bool connection_impl::dispatch_rtp(rtp::rtp_packet &pkt) noexcept {
     auto ctx_it = _ssrc_set.find(pkt.ssrc);
     if (ctx_it != _ssrc_set.end()) {
         auto &ctx = *ctx_it;
-        uint32_t prev = ctx.packets_expected_count();
+        uint64_t prev = ctx.packets_expected_count();
         ctx.track_packet(pkt.sequence_number, pkt.timestamp);
 
         if (ctx.check_gap(prev)) {

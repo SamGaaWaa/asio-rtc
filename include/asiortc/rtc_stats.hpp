@@ -21,7 +21,7 @@ struct rtc_rtp_stream_stats : rtc_stats {
 };
 
 struct rtc_received_rtp_stream_stats : rtc_rtp_stream_stats {
-    uint32_t packets_received = 0;
+    uint64_t packets_received = 0;
     int64_t packets_lost = 0;
     uint32_t jitter = 0;
 };
@@ -34,7 +34,7 @@ struct rtc_remote_inbound_rtp_stream_stats : rtc_received_rtp_stream_stats {
 };
 
 struct rtc_sent_rtp_stream_stats : rtc_rtp_stream_stats {
-    uint32_t packets_sent = 0;
+    uint64_t packets_sent = 0;
     uint64_t bytes_sent = 0;
 };
 

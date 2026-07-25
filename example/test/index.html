@@ -1,0 +1,647 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8">
+    <title>asiortc Negotiation Test Suite</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            max-width: 960px;
+            margin: 20px auto;
+            padding: 0 16px;
+            background: #fafafa;
+            color: #222;
+        }
+
+        h1 {
+            font-size: 20px;
+            margin-bottom: 4px;
+        }
+
+        .subtitle {
+            color: #666;
+            font-size: 13px;
+            margin-bottom: 16px;
+        }
+
+        .toolbar {
+            margin-bottom: 16px;
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .btn {
+            padding: 6px 18px;
+            border: 1px solid #999;
+            background: #fff;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 13px;
+        }
+
+        .btn:hover {
+            background: #eef;
+            border-color: #55f;
+        }
+
+        .btn:disabled {
+            opacity: 0.4;
+            cursor: default;
+        }
+
+        .btn.primary {
+            background: #2266cc;
+            color: #fff;
+            border-color: #2266cc;
+        }
+
+        .btn.primary:hover {
+            background: #1a52a3;
+        }
+
+        #cases {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .case {
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            background: #fff;
+        }
+
+        .case.pending {
+            border-left: 4px solid #aaa;
+        }
+
+        .case.running {
+            border-left: 4px solid #07f;
+            background: #f0f7ff;
+        }
+
+        .case.pass {
+            border-left: 4px solid #0a0;
+            background: #f0fff4;
+        }
+
+        .case.fail {
+            border-left: 4px solid #d00;
+            background: #fff0f0;
+        }
+
+        .case-header {
+            display: flex;
+            align-items: center;
+            padding: 10px 14px;
+            gap: 10px;
+        }
+
+        .case-id {
+            font-weight: 700;
+            color: #888;
+            min-width: 20px;
+        }
+
+        .case-name {
+            font-weight: 600;
+            flex: 1;
+        }
+
+        .case-desc {
+            color: #888;
+            font-size: 12px;
+        }
+
+        .case-status {
+            font-size: 12px;
+            min-width: 60px;
+            text-align: right;
+        }
+
+        .case-body {
+            padding: 0 14px 12px 14px;
+            display: none;
+        }
+
+        .case.show .case-body {
+            display: block;
+        }
+
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            font-size: 12px;
+            margin-top: 8px;
+        }
+
+        td,
+        th {
+            border: 1px solid #ddd;
+            padding: 4px 8px;
+            text-align: left;
+            vertical-align: top;
+        }
+
+        th {
+            background: #f5f5f5;
+            font-weight: 600;
+        }
+
+        .pass-text {
+            color: #0a0;
+            font-weight: 600;
+        }
+
+        .fail-text {
+            color: #d00;
+            font-weight: 600;
+        }
+
+        #log {
+            background: #1a1a1a;
+            color: #0f0;
+            padding: 10px;
+            border-radius: 4px;
+            max-height: 260px;
+            overflow-y: auto;
+            font-size: 11px;
+            line-height: 1.4;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+    </style>
+</head>
+
+<body>
+
+    <h1>asiortc Negotiation Test Suite</h1>
+    <p class="subtitle">WebSocket on ws://localhost:8087/ &mdash; each case uses a fresh PeerConnection</p>
+
+    <div class="toolbar">
+        <button id="runAllBtn" class="btn primary">Run All</button>
+        <button id="resetBtn" class="btn">Reset</button>
+        <span id="connStatus" style="font-size:12px;color:#888;"></span>
+    </div>
+
+    <div id="cases"></div>
+
+    <h3 style="margin:16px 0 4px;">Log</h3>
+    <pre id="log"></pre>
+
+    <script>
+        const PORT = 8087;
+
+        function log(s) {
+            const el = document.getElementById('log');
+            el.textContent += new Date().toISOString().split('T')[1].slice(0, 12) + ' ' + s + '\n';
+            el.scrollTop = el.scrollHeight;
+            console.log(s);
+        }
+
+        // ── WebSocket queue ────────────────────────────────────────────
+
+        class WsQueue {
+            constructor(ws) {
+                this.ws = ws;
+                this._q = [];
+                this._waiters = [];
+                ws.addEventListener('message', (e) => {
+                    const m = JSON.parse(e.data);
+                    if (this._waiters.length) { this._waiters.shift()(m); }
+                    else { this._q.push(m); }
+                    log('← ' + m.type + (m.case != null ? '#' + m.case : '') +
+                        (m.pass != null ? (m.pass ? ' pass' : ' FAIL') : '') +
+                        (m.status ? ' ' + m.status : ''));
+                });
+            }
+
+            async recv() {
+                if (this._q.length) return this._q.shift();
+                return new Promise(r => this._waiters.push(r));
+            }
+
+            async waitFor(type) {
+                while (true) {
+                    const m = await this.recv();
+                    if (m.type === type) return m;
+                }
+            }
+
+            send(obj) {
+                log('→ ' + obj.type + (obj.case != null ? ' #' + obj.case : ''));
+                this.ws.send(JSON.stringify(obj));
+            }
+        }
+
+        // ── Common helpers ─────────────────────────────────────────────
+
+        async function getCameraStream(constraints) {
+            return navigator.mediaDevices.getUserMedia(constraints);
+        }
+
+        function waitIceGather(pc, timeoutMs = 10000) {
+            return new Promise((resolve) => {
+                const timeout = setTimeout(() => resolve(), timeoutMs);
+                if (pc.iceGatheringState === 'complete') { clearTimeout(timeout); resolve(); }
+                else pc.addEventListener('icegatheringstatechange', () => {
+                    if (pc.iceGatheringState === 'complete') { clearTimeout(timeout); resolve(); }
+                });
+            });
+        }
+
+        function waitConnection(pc, timeoutMs = 20000) {
+            return new Promise((resolve, reject) => {
+                const timeout = setTimeout(() => reject(new Error('ICE timeout')), timeoutMs);
+                pc.addEventListener('connectionstatechange', () => {
+                    if (pc.connectionState === 'connected') { clearTimeout(timeout); resolve(); }
+                    else if (pc.connectionState === 'failed') { clearTimeout(timeout); reject(new Error('ICE failed')); }
+                });
+            });
+        }
+
+        function renderResult(el, cppResult, browserResult) {
+            el.className = 'case show ' + (cppResult.pass && browserResult.pass ? 'pass' : 'fail');
+            el.querySelector('.case-status').textContent =
+                cppResult.pass && browserResult.pass ? '✅ PASS' : '❌ FAIL';
+            const body = el.querySelector('.case-body');
+
+            function fmt(v) {
+                if (v === null || v === undefined) return '—';
+                if (typeof v === 'object') return JSON.stringify(v);
+                return String(v);
+            }
+
+            let html = '<table><tr><th></th><th>C++</th><th>Browser</th></tr>';
+
+            if (cppResult.details && cppResult.details.cpp) {
+                for (const [k, v] of Object.entries(cppResult.details.cpp)) {
+                    html += '<tr><td style="color:#888">' + k + '</td>' +
+                        '<td>' + fmt(v) + '</td><td></td></tr>';
+                }
+            }
+            if (browserResult.details) {
+                for (const [k, v] of Object.entries(browserResult.details)) {
+                    html += '<tr><td style="color:#888">' + k + '</td>' +
+                        '<td></td><td>' + fmt(v) + '</td></tr>';
+                }
+            }
+
+            html += '<tr><td style="font-weight:600">Pass</td>' +
+                '<td class="' + (cppResult.pass ? 'pass-text' : 'fail-text') + '">' +
+                (cppResult.pass ? '✅' : '❌') + '</td>' +
+                '<td class="' + (browserResult.pass ? 'pass-text' : 'fail-text') + '">' +
+                (browserResult.pass ? '✅' : '❌') + '</td></tr>';
+
+            html += '<tr style="font-weight:700;border-top:2px solid #999">' +
+                '<td>Overall</td><td colspan="2" class="' +
+                (cppResult.pass && browserResult.pass ? 'pass-text' : 'fail-text') + '">' +
+                (cppResult.pass && browserResult.pass ? '✅ PASS' : '❌ FAIL') + '</td></tr>';
+
+            html += '</table>';
+            body.innerHTML = html;
+        }
+
+        function showError(el, msg) {
+            el.className = 'case show fail';
+            el.querySelector('.case-status').textContent = '❌ FAIL';
+            el.querySelector('.case-body').innerHTML =
+                '<span class="fail-text">Error: ' + msg + '</span>';
+        }
+
+        function assert(cond, msg) {
+            if (!cond)
+                throw new Error(msg)
+        }
+
+        // ── Test case functions ────────────────────────────────────────
+
+        async function test_case_1_basic_video(q, el) {
+            el.className = 'case running';
+            el.querySelector('.case-status').textContent = '▶ RUNNING';
+            const pc = new RTCPeerConnection();
+            try {
+                q.send({ type: 'start_test', case: 1, name: 'Basic Video' });
+                await q.waitFor('status');
+
+                const stream = await getCameraStream({ video: true, audio: false });
+                stream.getTracks().forEach(t => pc.addTrack(t, stream));
+
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+                await waitIceGather(pc);
+                q.send({ type: 'offer', sdp: pc.localDescription.sdp });
+
+                const ans = await q.waitFor('answer');
+                await pc.setRemoteDescription({ type: 'answer', sdp: ans.sdp });
+                await waitConnection(pc);
+
+                const cpp = await q.waitFor('result');
+                const connOk = pc.connectionState === 'connected';
+                const recvs = pc.getReceivers();
+                const br = {
+                    pass: connOk && recvs.length > 0,
+                    details: { connectionState: pc.connectionState, receiverCount: recvs.length }
+                };
+                renderResult(el, cpp, br);
+                return cpp.pass && br.pass;
+            } catch (e) {
+                log('ERROR #1: ' + e.message);
+                showError(el, e.message);
+                return false;
+            } finally { pc.close(); }
+        }
+
+        async function test_case_2_audio_video(q, el) {
+            el.className = 'case running';
+            el.querySelector('.case-status').textContent = '▶ RUNNING';
+            const pc = new RTCPeerConnection();
+            try {
+                q.send({ type: 'start_test', case: 2, name: 'Audio+Video' });
+                await q.waitFor('status');
+
+                const stream = await getCameraStream({ video: true, audio: true });
+                stream.getTracks().forEach(t => pc.addTrack(t, stream));
+
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+                await waitIceGather(pc);
+                q.send({ type: 'offer', sdp: pc.localDescription.sdp });
+
+                const ans = await q.waitFor('answer');
+                await pc.setRemoteDescription({ type: 'answer', sdp: ans.sdp });
+                await waitConnection(pc);
+
+                const cpp = await q.waitFor('result');
+                const connOk = pc.connectionState === 'connected';
+                const kinds = pc.getReceivers().map(r => r.track.kind);
+                const br = {
+                    pass: connOk && kinds.includes('audio') && kinds.includes('video'),
+                    details: { connectionState: pc.connectionState, receiverKinds: kinds }
+                };
+                renderResult(el, cpp, br);
+                return cpp.pass && br.pass;
+            } catch (e) {
+                log('ERROR #2: ' + e.message);
+                showError(el, e.message);
+                return false;
+            } finally { pc.close(); }
+        }
+
+        async function test_case_3_dc_echo(q, el) {
+            el.className = 'case running';
+            el.querySelector('.case-status').textContent = '▶ RUNNING';
+            const pc = new RTCPeerConnection();
+            const dc = pc.createDataChannel('test-echo');
+            let echoReceived = false;
+            let echoText = '';
+            try {
+                dc.onmessage = (e) => {
+                    echoReceived = true;
+                    echoText = e.data;
+                    log('DC echo received: ' + e.data);
+                };
+
+                q.send({ type: 'start_test', case: 3, name: 'DataChannel Echo' });
+                await q.waitFor('status');
+
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+                await waitIceGather(pc);
+                q.send({ type: 'offer', sdp: pc.localDescription.sdp });
+
+                const ans = await q.waitFor('answer');
+                await pc.setRemoteDescription({ type: 'answer', sdp: ans.sdp });
+                await waitConnection(pc);
+
+                await new Promise((resolve, reject) => {
+                    const t = setTimeout(() => reject(new Error('DC open timeout')), 10000);
+                    if (dc.readyState === 'open') { clearTimeout(t); resolve(); }
+                    else dc.onopen = () => { clearTimeout(t); resolve(); };
+                });
+
+                const testText = 'hello-asiortc-3';
+                dc.send(testText);
+                log('DC sent: ' + testText);
+
+                const cpp = await q.waitFor('result');
+                const br = {
+                    pass: echoReceived && echoText === testText,
+                    details: { connectionState: pc.connectionState, echoReceived, echoText }
+                };
+                renderResult(el, cpp, br);
+                return cpp.pass && br.pass;
+            } catch (e) {
+                log('ERROR #3: ' + e.message);
+                showError(el, e.message);
+                return false;
+            } finally { pc.close(); }
+        }
+
+        async function test_case_4_cxx_offerer(q, el) {
+            el.className = 'case running';
+            el.querySelector('.case-status').textContent = '▶ RUNNING';
+            const pc = new RTCPeerConnection();
+            const stream = await getCameraStream({ video: true, audio: true });
+            stream.getTracks().forEach(t => pc.addTrack(t, stream));
+            let tracks = 0;
+            try {
+                pc.ontrack = (e) => { tracks++; log('ontrack: ' + e.track.kind); };
+
+                q.send({ type: 'start_test', case: 4, name: 'C++ as Offerer' });
+                await q.waitFor('status');
+
+                q.send({ type: 'request_offer' });
+
+                const off = await q.waitFor('offer');
+                await pc.setRemoteDescription({ type: 'offer', sdp: off.sdp });
+                assert(tracks == 1, "ontrack should invoke 2 times")
+                const answer = await pc.createAnswer();
+                await pc.setLocalDescription(answer);
+                await waitIceGather(pc);
+                q.send({ type: 'answer', sdp: pc.localDescription.sdp });
+
+                await waitConnection(pc);
+
+                const cpp = await q.waitFor('result');
+                const br = {
+                    pass: pc.connectionState === 'connected',
+                    details: { connectionState: pc.connectionState, tracksReceived: tracks }
+                };
+                renderResult(el, cpp, br);
+                return cpp.pass && br.pass;
+            } catch (e) {
+                log('ERROR #4: ' + e.message);
+                showError(el, e.message);
+                return false;
+            } finally { pc.close(); }
+        }
+
+        async function test_case_5_multi_transceiver(q, el) {
+            el.className = 'case running';
+            el.querySelector('.case-status').textContent = '▶ RUNNING';
+            const pc = new RTCPeerConnection();
+            try {
+                q.send({ type: 'start_test', case: 5, name: 'Multi Transceiver' });
+                await q.waitFor('status');
+
+                const stream = await getCameraStream({ video: true, audio: true });
+                stream.getTracks().forEach(t => pc.addTrack(t, stream));
+
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+                await waitIceGather(pc);
+                q.send({ type: 'offer', sdp: pc.localDescription.sdp });
+
+                const ans = await q.waitFor('answer');
+
+                let ontrack_call = 0;
+                let stream_set = new Set()
+                pc.ontrack = (ev) => {
+                    log(`on_track`)
+                    for (const stream of ev.streams) {
+                        log(`stream: ${stream.id}`)
+                        stream_set.add(stream.id)
+                    }
+                    ++ontrack_call
+                    assert(ev.streams.length == 1)
+                }
+                await pc.setRemoteDescription({ type: 'answer', sdp: ans.sdp });
+                await waitConnection(pc);
+
+                assert(ontrack_call == 2, "ontrack should invoke twice")
+                log(stream_set.size)
+                assert(stream_set.size == 1, "video and audio should in the same stream")
+
+                const cpp = await q.waitFor('result');
+                const connOk = pc.connectionState === 'connected';
+
+                const recvs = pc.getReceivers();
+                const br = {
+                    pass: connOk && recvs.length > 0,
+                    details: { connectionState: pc.connectionState, receiverCount: recvs.length }
+                };
+                renderResult(el, cpp, br);
+                return cpp.pass && br.pass;
+            } catch (e) {
+                log('ERROR #5: ' + e.message);
+                showError(el, e.message);
+                return false;
+            } finally { pc.close(); }
+        }
+
+        const caseFns = {
+            1: test_case_1_basic_video,
+            2: test_case_2_audio_video,
+            3: test_case_3_dc_echo,
+            4: test_case_4_cxx_offerer,
+            5: test_case_5_multi_transceiver,
+        };
+
+        const caseNames = {
+            1: 'Basic Video',
+            2: 'Audio+Video',
+            3: 'DataChannel Echo',
+            4: 'C++ as Offerer',
+            5: 'Multi Transceiver',
+        };
+
+        const caseDescs = {
+            1: 'Browser offers video, C++ answers with 1 video transceiver  [browser offers]',
+            2: 'Browser offers audio+video, C++ creates 2 transceivers  [browser offers]',
+            3: 'C++ creates DataChannel, browser echoes test message back  [browser offers]',
+            4: 'C++ creates offer with 1 video transceiver, browser answers  [C++ offers]',
+            5: 'Browser offers 1 video, C++ creates 2 video transceivers  [browser offers]',
+        };
+
+        // ── UI setup ───────────────────────────────────────────────────
+
+        function buildUI() {
+            const container = document.getElementById('cases');
+            for (const id of [1, 2, 3, 4, 5]) {
+                const div = document.createElement('div');
+                div.id = 'case-' + id;
+                div.className = 'case pending';
+                div.innerHTML = '<div class="case-header">' +
+                    '<span class="case-id">#' + id + '</span>' +
+                    '<span class="case-name">' + caseNames[id] + '</span>' +
+                    '<span class="case-desc">' + caseDescs[id] + '</span>' +
+                    '<button class="btn run-btn">Run</button>' +
+                    '<span class="case-status">⏳ PENDING</span>' +
+                    '</div>' +
+                    '<div class="case-body"></div>';
+                container.appendChild(div);
+            }
+        }
+
+        // ── Entry point ────────────────────────────────────────────────
+
+        async function main() {
+            buildUI();
+
+            const ws = new WebSocket('ws://localhost:' + PORT + '/ws');
+            const statusEl = document.getElementById('connStatus');
+
+            ws.addEventListener('open', () => {
+                statusEl.textContent = '✅ connected';
+                statusEl.style.color = '#0a0';
+                log('WS connected');
+            });
+            ws.addEventListener('close', (e) => {
+                statusEl.textContent = '❌ disconnected (' + e.code + ')';
+                statusEl.style.color = '#d00';
+                log('WS closed: ' + e.code);
+            });
+            ws.addEventListener('error', () => {
+                statusEl.textContent = '⚠ error';
+                statusEl.style.color = '#d00';
+            });
+
+            await new Promise(r => { if (ws.readyState === 1) r(); else ws.addEventListener('open', r); });
+
+            const q = new WsQueue(ws);
+
+            document.querySelectorAll('.run-btn').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    const caseEl = btn.closest('.case');
+                    const id = parseInt(caseEl.id.split('-')[1]);
+                    btn.disabled = true;
+                    document.getElementById('runAllBtn').disabled = true;
+                    await caseFns[id](q, caseEl);
+                    document.getElementById('runAllBtn').disabled = false;
+                });
+            });
+
+            document.getElementById('runAllBtn').addEventListener('click', async () => {
+                const btn = document.getElementById('runAllBtn');
+                btn.disabled = true;
+                let passed = 0;
+                for (const id of [1, 2, 3, 4, 5]) {
+                    const el = document.getElementById('case-' + id);
+                    const ok = await caseFns[id](q, el);
+                    if (ok) passed++;
+                }
+                btn.disabled = false;
+                log('=== Run All complete: ' + passed + '/5 passed ===');
+            });
+
+            document.getElementById('resetBtn').addEventListener('click', () => {
+                document.querySelectorAll('.case').forEach(el => {
+                    el.className = 'case pending';
+                    el.querySelector('.case-status').textContent = '⏳ PENDING';
+                    el.querySelector('.case-body').innerHTML = '';
+                });
+                document.querySelectorAll('.run-btn').forEach(b => b.disabled = false);
+                document.getElementById('runAllBtn').disabled = false;
+            });
+
+            log('Ready. Select a test case or Run All.');
+        }
+
+        main();
+    </script>
+</body>
+
+</html>

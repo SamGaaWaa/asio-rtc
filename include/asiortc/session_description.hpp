@@ -20,6 +20,11 @@ struct sdp_rtcp_fb {
     std::string subtype;
 };
 
+struct sdp_msid {
+    std::string stream_id;
+    std::string track_id;
+};
+
 struct sdp_codec {
     uint8_t payload_type = 0;
     std::string name;
@@ -53,7 +58,7 @@ struct sdp_media {
     std::vector<sdp_extmap> extmaps;
     std::vector<sdp_rtcp_fb> rtcp_fbs;
     std::vector<std::string> ssrcs;
-    std::vector<std::string> msids;
+    std::vector<sdp_msid> msids;
     std::vector<std::string> rids;
     std::string simulcast;
 

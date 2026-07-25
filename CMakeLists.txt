@@ -58,6 +58,7 @@ add_subdirectory(third_party/libsrtp)
     src/codecs/default_opus.cpp
     src/codecs/vpx_descriptor.cpp
     src/nack_generator.cpp
+    src/uuid.cpp
 )
 add_library(asiortc STATIC ${RTC_SRC_FILES})
 target_link_libraries(asiortc PRIVATE asioice OpenSSL::SSL OpenSSL::Crypto srtp3)
@@ -119,3 +120,4 @@ add_subdirectory(example/chat)
 add_subdirectory(example/transceiver_test)
 add_subdirectory(example/ffmpeg_track)
 add_subdirectory(example/sfu)
+add_subdirectory(example/test)

@@ -247,7 +247,12 @@ void apply_media_attr(sdp_media &media, std::string_view name,
     } else if (name == "ssrc") {
         media.ssrcs.push_back(vstr);
     } else if (name == "msid") {
-        media.msids.push_back(vstr);
+        auto sp = value.find(' ');
+        if (sp == std::string_view::npos)
+            media.msids.push_back({std::string(value), {}});
+        else
+            media.msids.push_back({std::string(value.substr(0, sp)),
+                                   std::string(value.substr(sp + 1))});
     } else if (name == "rid") {
         media.rids.push_back(vstr);
     } else if (name == "simulcast") {
@@ -517,8 +522,12 @@ std::string session_description::to_string() const {
         }
         for (const auto &s : m.ssrcs)
             out += "a=ssrc:" + s + "\r\n";
-        for (const auto &msid : m.msids)
-            out += "a=msid:" + msid + "\r\n";
+        for (const auto &msid : m.msids) {
+            out += "a=msid:" + msid.stream_id;
+            if (!msid.track_id.empty())
+                out += " " + msid.track_id;
+            out += "\r\n";
+        }
         for (const auto &rid : m.rids)
             out += "a=rid:" + rid + "\r\n";
         if (!m.simulcast.empty())

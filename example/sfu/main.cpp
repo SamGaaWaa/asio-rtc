@@ -31,7 +31,6 @@ namespace websocket = beast::websocket;
 #include <string>
 #include <vector>
 
-using namespace asioice;
 using namespace asiortc;
 
 using ws_t = websocket::stream<beast::tcp_stream>;

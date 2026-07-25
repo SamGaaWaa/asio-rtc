@@ -39,7 +39,10 @@ namespace net = boost::asio;
 
 namespace asiortc {
 
-namespace utils = asioice::utils;
+namespace utils {
+using asioice::utils::scheduler;
+using asioice::utils::use_sender;
+} // namespace utils
 
 enum struct ice_connection_state_t : char {
     init,

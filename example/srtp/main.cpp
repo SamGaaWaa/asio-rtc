@@ -32,7 +32,6 @@ namespace websocket = beast::websocket;
 #include <string>
 #include <vector>
 
-using namespace asioice;
 using namespace asiortc;
 
 using ws_t = websocket::stream<beast::tcp_stream>;
@@ -59,15 +58,16 @@ static task<nlohmann::json> ws_recv(ws_t &ws) {
     co_return j;
 }
 
-static std::string srtp_suite_name(ssl::srtp_protection_profile profile) {
+static std::string
+srtp_suite_name(asioice::ssl::srtp_protection_profile profile) {
     switch (profile) {
-    case ssl::srtp_protection_profile::srtp_aes128_cm_sha1_80:
+    case asioice::ssl::srtp_protection_profile::srtp_aes128_cm_sha1_80:
         return "AES_CM_128_HMAC_SHA1_80";
-    case ssl::srtp_protection_profile::srtp_aes128_cm_sha1_32:
+    case asioice::ssl::srtp_protection_profile::srtp_aes128_cm_sha1_32:
         return "AES_CM_128_HMAC_SHA1_32";
-    case ssl::srtp_protection_profile::srtp_aead_aes_128_gcm:
+    case asioice::ssl::srtp_protection_profile::srtp_aead_aes_128_gcm:
         return "AES_128_GCM";
-    case ssl::srtp_protection_profile::srtp_aead_aes_256_gcm:
+    case asioice::ssl::srtp_protection_profile::srtp_aead_aes_256_gcm:
         return "AES_256_GCM";
     default:
         return "unknown";
@@ -189,22 +189,21 @@ static task<void> srtp_session(net::io_context &ctx, ws_ptr ws) {
 
     int recv_count{0};
     conn->on_track([&recv_count](std::shared_ptr<rtp_receiver> receiver,
-                      std::shared_ptr<media_track> track,
-                      std::vector<std::string> msids,
-                      std::shared_ptr<rtp_transceiver> transceiver) {
+                                 std::shared_ptr<media_track> track,
+                                 std::vector<std::string> msids,
+                                 std::shared_ptr<rtp_transceiver> transceiver) {
         std::cout << "New track: kind="
                   << (track->kind() == media_kind::audio ? "audio" : "video")
                   << " id=" << track->id() << " mid=" << transceiver->mid()
                   << " msids=" << msids.size() << '\n';
         receiver->on_rtp([&](rtp::rtp_packet &pkt) {
             int n = ++recv_count;
-            std::cout << "RTP recv #" << n << " SSRC=0x" << std::hex
-                        << pkt.ssrc << std::dec
-                        << " PT=" << (int)pkt.payload_type
-                        << " seq=" << pkt.sequence_number
-                        << " ts=" << pkt.timestamp
-                        << " marker=" << (int)pkt.marker
-                        << " payload=" << pkt.payload.size() << "B\n";
+            std::cout << "RTP recv #" << n << " SSRC=0x" << std::hex << pkt.ssrc
+                      << std::dec << " PT=" << (int)pkt.payload_type
+                      << " seq=" << pkt.sequence_number
+                      << " ts=" << pkt.timestamp
+                      << " marker=" << (int)pkt.marker
+                      << " payload=" << pkt.payload.size() << "B\n";
             return true;
         });
     });

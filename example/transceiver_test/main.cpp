@@ -33,7 +33,6 @@ namespace websocket = beast::websocket;
 #include <string>
 #include <vector>
 
-using namespace asioice;
 using namespace asiortc;
 
 using ws_t = websocket::stream<beast::tcp_stream>;
@@ -60,15 +59,16 @@ static task<nlohmann::json> ws_recv(ws_t &ws) {
     co_return j;
 }
 
-static std::string srtp_suite_name(ssl::srtp_protection_profile profile) {
+static std::string
+srtp_suite_name(asioice::ssl::srtp_protection_profile profile) {
     switch (profile) {
-    case ssl::srtp_protection_profile::srtp_aes128_cm_sha1_80:
+    case asioice::ssl::srtp_protection_profile::srtp_aes128_cm_sha1_80:
         return "AES_CM_128_HMAC_SHA1_80";
-    case ssl::srtp_protection_profile::srtp_aes128_cm_sha1_32:
+    case asioice::ssl::srtp_protection_profile::srtp_aes128_cm_sha1_32:
         return "AES_CM_128_HMAC_SHA1_32";
-    case ssl::srtp_protection_profile::srtp_aead_aes_128_gcm:
+    case asioice::ssl::srtp_protection_profile::srtp_aead_aes_128_gcm:
         return "AES_128_GCM";
-    case ssl::srtp_protection_profile::srtp_aead_aes_256_gcm:
+    case asioice::ssl::srtp_protection_profile::srtp_aead_aes_256_gcm:
         return "AES_256_GCM";
     default:
         return "unknown";
@@ -92,11 +92,10 @@ static void setup_transceivers(connection_impl &conn) {
         audio->receiver()->on_rtp([&](rtp::rtp_packet &pkt) {
             int n = ++recv_count;
             std::cout << "audio recv RTP #" << n << " SSRC=0x" << std::hex
-                        << pkt.ssrc << std::dec
-                        << " PT=" << (int)pkt.payload_type
-                        << " seq=" << pkt.sequence_number
-                        << " ts=" << pkt.timestamp
-                        << " payload=" << pkt.payload.size() << "B\n";
+                      << pkt.ssrc << std::dec << " PT=" << (int)pkt.payload_type
+                      << " seq=" << pkt.sequence_number
+                      << " ts=" << pkt.timestamp
+                      << " payload=" << pkt.payload.size() << "B\n";
             return true;
         });
     }
@@ -115,11 +114,10 @@ static void setup_transceivers(connection_impl &conn) {
         video->receiver()->on_rtp([&](rtp::rtp_packet &pkt) {
             int n = ++recv_count;
             std::cout << "video recv RTP #" << n << " SSRC=0x" << std::hex
-                        << pkt.ssrc << std::dec
-                        << " PT=" << (int)pkt.payload_type
-                        << " seq=" << pkt.sequence_number
-                        << " ts=" << pkt.timestamp
-                        << " payload=" << pkt.payload.size() << "B\n";
+                      << pkt.ssrc << std::dec << " PT=" << (int)pkt.payload_type
+                      << " seq=" << pkt.sequence_number
+                      << " ts=" << pkt.timestamp
+                      << " payload=" << pkt.payload.size() << "B\n";
             return true;
         });
     }
@@ -162,7 +160,7 @@ static task<void> transceiver_session(net::io_context &ctx, ws_ptr ws) {
     net::steady_timer timer(ctx);
 
     auto conn = std::make_shared<connection_impl>(ctx.get_executor());
-    utils::scope_guard auto_close([&]() noexcept { conn->close(); });
+    asioice::utils::scope_guard auto_close([&]() noexcept { conn->close(); });
     setup_transceivers(*conn);
 
     auto offer = co_await conn->create_offer();

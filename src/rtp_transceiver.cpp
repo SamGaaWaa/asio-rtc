@@ -90,7 +90,8 @@ sdp_media rtp_transceiver::to_offer_sdp_media(std::string mid) const {
     m.rtcp_mux = true;
     m.msids.clear();
     for (const auto &ms : _sender->_msids)
-        m.msids.push_back(ms + " " + mid);
+        m.msids.push_back(
+            {std::string(ms), _sender->track() ? _sender->track()->id() : mid});
 
     for (const auto &c : _codecs) {
         m.payload_types.push_back(c.payload_type);
@@ -284,9 +285,10 @@ sdp_media rtp_transceiver::to_answer_sdp_media(const sdp_media &remote) const {
         } else if (!_sender->_streams.empty()) {
             auto ssrc = _sender->_streams[0]->ssrc;
             m.ssrcs.push_back(std::to_string(ssrc) + " cname:asiortc");
+            std::string tid = _sender->track() ? _sender->track()->id() : _mid;
             for (const auto &ms : _sender->_msids)
                 m.ssrcs.push_back(std::to_string(ssrc) + " msid:" + ms + " " +
-                                  _mid);
+                                  tid);
         }
     }
 

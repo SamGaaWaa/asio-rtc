@@ -798,9 +798,14 @@ connection_impl::set_remote_description(session_description desc) {
                     track = std::make_shared<media_track_impl>(k, rm.mid);
                     tr->receiver()->set_track(track);
                 }
-                if (_on_track_cb)
+                if (_on_track_cb) {
+                    std::vector<std::string> stream_ids;
+                    stream_ids.reserve(rm.msids.size());
+                    for (const auto &m : rm.msids)
+                        stream_ids.push_back(m.stream_id);
                     _on_track_cb(std::move(receiver), std::move(track),
-                                 rm.msids, std::move(tr));
+                                 std::move(stream_ids), std::move(tr));
+                }
             }
         }
         std::erase_if(_transceivers,
@@ -846,9 +851,14 @@ connection_impl::set_remote_description(session_description desc) {
                     track = std::make_shared<media_track_impl>(k, rm.mid);
                     tr->receiver()->set_track(track);
                 }
-                if (_on_track_cb)
+                if (_on_track_cb) {
+                    std::vector<std::string> stream_ids;
+                    stream_ids.reserve(rm.msids.size());
+                    for (const auto &m : rm.msids)
+                        stream_ids.push_back(m.stream_id);
                     _on_track_cb(std::move(receiver), std::move(track),
-                                 rm.msids, tr);
+                                 std::move(stream_ids), tr);
+                }
             }
         }
         _signaling_state = signaling_state_t::have_remote_pranswer;
@@ -974,6 +984,7 @@ asiortc::task<session_description> connection_impl::create_answer() {
             answer_media.media_type = rm.media_type;
             answer_media.port = 9;
             answer_media.proto = rm.proto;
+            answer_media.fmts = rm.fmts;
             answer_media.conn_nettype = "IN";
             answer_media.conn_addrtype = "IP4";
             answer_media.conn_addr = "0.0.0.0";

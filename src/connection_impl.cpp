@@ -715,27 +715,37 @@ connection_impl::set_remote_description(session_description desc) {
         for (const auto &rm : _remote_desc->medias) {
             if (rm.media_type == "application")
                 continue;
-            if (rm.media_type != "video" && rm.media_type != "audio")
+            media_kind rm_kind = media_kind::video;
+            if (rm.media_type == "audio")
+                rm_kind = media_kind::audio;
+            else if (rm.media_type != "video")
                 continue;
             if (rm.mid.empty())
                 throw std::invalid_argument{"rm.mid == \"\""};
             std::shared_ptr<rtp_transceiver> tr = nullptr;
-            auto it = std::find_if(
-                _transceivers.begin(), _transceivers.end(), [&](const auto &t) {
-                    if (!t->mid().empty() || t->codecs().empty() ||
-                        t->stopped())
-                        return false;
-                    const auto &name = t->codecs()[0].name;
-                    if (rm.media_type == "audio")
-                        return name == "opus" || name == "PCMU" ||
-                               name == "PCMA" || name == "telephone-event" ||
-                               name.starts_with("G7") || name == "CN" ||
-                               name == "L16" || name == "L24";
-                    return name.starts_with("VP") || name.starts_with("H26") ||
-                           name.starts_with("AV1") || name == "rtx" ||
-                           name == "red" || name == "ulpfec" ||
-                           name == "flexfec";
-                });
+            auto it = std::find_if(_transceivers.begin(), _transceivers.end(),
+                                   [&](const auto &t) {
+                                       if (!t->mid().empty() ||
+                                           t->codecs().empty() || t->stopped())
+                                           return false;
+                                       // const auto &name =
+                                       // t->codecs()[0].name; if (rm.media_type
+                                       // == "audio")
+                                       //     return name == "opus" || name ==
+                                       //     "PCMU" ||
+                                       //            name == "PCMA" || name ==
+                                       //            "telephone-event" ||
+                                       //            name.starts_with("G7") ||
+                                       //            name == "CN" || name ==
+                                       //            "L16" || name == "L24";
+                                       // return name.starts_with("VP") ||
+                                       // name.starts_with("H26") ||
+                                       //        name.starts_with("AV1") || name
+                                       //        == "rtx" || name == "red" ||
+                                       //        name == "ulpfec" || name ==
+                                       //        "flexfec";
+                                       return t->kind() == rm_kind;
+                                   });
             if (it != _transceivers.end()) {
                 (*it)->set_mid(rm.mid);
                 (*it)->from_remote_sdp(rm);
@@ -780,13 +790,14 @@ connection_impl::set_remote_description(session_description desc) {
                     tr = *it;
             }
             if (!tr) {
-                tr = std::make_shared<rtp_transceiver>(weak_from_this());
-                tr->set_mid(rm.mid);
-                tr->set_direction(sdp_direction::recvonly);
-                tr->wire_back_references();
-                tr->from_remote_sdp(rm);
-                tr->set_codecs(rm.rtpmaps);
-                _transceivers.push_back(tr);
+                // tr = std::make_shared<rtp_transceiver>(weak_from_this());
+                // tr->set_mid(rm.mid);
+                // tr->set_direction(sdp_direction::recvonly);
+                // tr->wire_back_references();
+                // tr->from_remote_sdp(rm);
+                // tr->set_codecs(rm.rtpmaps);
+                // _transceivers.push_back(tr);
+                continue;
             }
             if (tr->direction() == sdp_direction::sendrecv ||
                 tr->direction() == sdp_direction::recvonly) {
@@ -1046,7 +1057,7 @@ connection_impl::create_data_channel(std::string label,
 
 std::shared_ptr<rtp_transceiver>
 connection_impl::add_transceiver(media_kind kind, rtp_transceiver_init init) {
-    auto t = std::make_shared<rtp_transceiver>(weak_from_this());
+    auto t = std::make_shared<rtp_transceiver>(kind, weak_from_this());
     t->wire_back_references();
     t->set_direction(init.direction);
     t->set_codecs(kind == media_kind::video ? default_video_codecs()
@@ -1095,6 +1106,37 @@ connection_impl::add_transceiver(std::shared_ptr<media_track> track,
     auto t = add_transceiver(track->kind(), std::move(init));
     t->sender()->set_track(std::move(track));
     return t;
+}
+
+std::shared_ptr<rtp_sender>
+connection_impl::add_track(std::shared_ptr<media_track> track,
+                           std::vector<std::string> streams) {
+    auto it = std::ranges::find_if(_transceivers, [&](const auto &tr) {
+        return !tr->stopped() && tr->kind() == track->kind() &&
+               tr->sender()->track() == nullptr;
+    });
+    if (it == _transceivers.end()) {
+        return add_transceiver(std::move(track),
+                               {.streams = std::move(streams)})
+            ->sender();
+    }
+
+    auto &tr = **it;
+    tr.sender()->set_msids(std::move(streams));
+    tr.set_direction([&] {
+        switch (tr.direction()) {
+        case sdp_direction::sendrecv:
+            return sdp_direction::sendrecv;
+        case sdp_direction::sendonly:
+            return sdp_direction::sendonly;
+        case sdp_direction::recvonly:
+            return sdp_direction::sendrecv;
+        case sdp_direction::inactive:
+            return sdp_direction::sendonly;
+        }
+        std::unreachable();
+    }());
+    return tr.sender();
 }
 
 asiortc::task<void> connection_impl::_sender_rtcp_loop(

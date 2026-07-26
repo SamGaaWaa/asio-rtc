@@ -126,6 +126,27 @@ struct peer_connection {
     add_transceiver(std::shared_ptr<media_track> track,
                     rtp_transceiver_init init = {});
 
+    rtp_sender_interface add_track(std::shared_ptr<media_track> track,
+                                   std::vector<std::string> streams);
+    rtp_sender_interface add_track(std::shared_ptr<media_track> track) {
+        return add_track(std::move(track), {});
+    }
+    template <class S1, class... String>
+        requires(std::is_constructible_v<std::string, S1> && ... &&
+                 std::is_constructible_v<std::string, String>)
+    rtp_sender_interface add_track(std::shared_ptr<media_track> track, S1 &&s1,
+                                   String &&...streams) {
+        return add_track(std::move(track),
+                         std::vector<std::string>{
+                             std::string(std::forward<S1>(s1)),
+                             std::string(std::forward<String>(streams))...});
+    }
+
+    std::vector<rtp_transceiver_interface> get_transceivers() const;
+
+    void replace_track(const rtp_sender_interface &sender,
+                       std::shared_ptr<media_track> track);
+
     auto send_rtp(const rtp_sender_interface &sender,
                   const rtp::rtp_packet &pkt) {
         if (!_impl || !sender)

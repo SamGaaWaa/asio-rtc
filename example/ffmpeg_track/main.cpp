@@ -646,20 +646,8 @@ static task<void> ffmpeg_session(net::io_context &ctx, ws_ptr ws) {
         co_return;
     }
 
-    for (auto &track : tracks) {
-        if (track->kind() == media_kind::video) {
-            auto tr = conn.add_transceiver(
-                media_kind::video,
-                {.direction = sdp_direction::sendrecv, .streams = {"ffmpeg"}});
-            tr.sender().set_track(track);
-            std::cout << "Set video sendrecv mid=" << tr.mid() << '\n';
-        } else {
-            auto tr = conn.add_transceiver(
-                media_kind::audio,
-                {.direction = sdp_direction::sendrecv, .streams = {"ffmpeg"}});
-            tr.sender().set_track(track);
-            std::cout << "Set audio sendrecv mid=" << tr.mid() << '\n';
-        }
+    for (const auto &track : tracks) {
+        conn.add_track(track, "ffmpeg");
     }
 
     std::cout << "Waiting for browser offer...\n";

@@ -134,6 +134,40 @@ peer_connection::add_transceiver(std::shared_ptr<media_track> track,
     return iface;
 }
 
+std::vector<rtp_transceiver_interface>
+peer_connection::get_transceivers() const {
+    throw_if_nullptr(_impl, "get_transceivers");
+    std::vector<rtp_transceiver_interface> out;
+    out.reserve(_impl->transceivers().size());
+    for (const auto &tr : _impl->transceivers()) {
+        rtp_transceiver_interface ti;
+        ti._impl = tr;
+        out.push_back(std::move(ti));
+    }
+    return out;
+}
+
+rtp_sender_interface
+peer_connection::add_track(std::shared_ptr<media_track> track,
+                           std::vector<std::string> streams) {
+    throw_if_nullptr(_impl, "add_track");
+    auto sender = _impl->add_track(std::move(track), std::move(streams));
+    rtp_sender_interface iface;
+    iface._impl = std::move(sender);
+    return iface;
+}
+
+void peer_connection::replace_track(const rtp_sender_interface &sender,
+                                    std::shared_ptr<media_track> track) {
+    throw_if_nullptr(_impl, "replace_track");
+    if (!sender || !track)
+        throw std::runtime_error{"replace_track: null sender or track"};
+    const auto &existing = sender._impl->track();
+    if (existing && existing->kind() != track->kind())
+        throw std::runtime_error{"replace_track: track kind mismatch"};
+    sender._impl->set_track(std::move(track));
+}
+
 data_channel_interface
 peer_connection::create_data_channel(std::string label,
                                      data_channel_options options) {

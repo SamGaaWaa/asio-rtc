@@ -138,8 +138,9 @@ std::vector<sdp_codec> default_video_codecs();
 std::vector<sdp_codec> default_audio_codecs();
 
 struct rtp_transceiver : std::enable_shared_from_this<rtp_transceiver> {
-    rtp_transceiver(std::weak_ptr<connection_impl> conn)
-        : _conn{std::move(conn)}, _sender{std::make_shared<rtp_sender>()},
+    rtp_transceiver(media_kind kind, std::weak_ptr<connection_impl> conn)
+        : _kind(kind), _conn{std::move(conn)},
+          _sender{std::make_shared<rtp_sender>()},
           _receiver{std::make_shared<rtp_receiver>()} {
         if (_conn.expired())
             throw std::invalid_argument{"conn == nullptr"};
@@ -154,6 +155,8 @@ struct rtp_transceiver : std::enable_shared_from_this<rtp_transceiver> {
 
     const std::string &mid() const noexcept { return _mid; }
     void set_mid(std::string mid) { _mid = std::move(mid); }
+
+    media_kind kind() const noexcept { return _kind; }
 
     sdp_direction direction() const noexcept { return _direction; }
     void set_direction(sdp_direction dir) { _direction = dir; }
@@ -190,6 +193,7 @@ struct rtp_transceiver : std::enable_shared_from_this<rtp_transceiver> {
   private:
     friend struct connection_impl;
 
+    media_kind _kind = media_kind::video;
     std::weak_ptr<connection_impl> _conn;
     std::string _mid{};
     sdp_direction _direction{sdp_direction::sendrecv};

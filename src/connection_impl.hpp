@@ -161,6 +161,9 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
     add_transceiver(std::shared_ptr<media_track>,
                     rtp_transceiver_init init = {});
 
+    std::shared_ptr<rtp_sender> add_track(std::shared_ptr<media_track> track,
+                                          std::vector<std::string> streams);
+
     const auto &transceivers() const noexcept { return _transceivers; }
     auto &transceivers() noexcept { return _transceivers; }
 

@@ -23,9 +23,9 @@ struct media_track_impl : public media_track {
     media_format format() const noexcept override {
         return media_format::unknown;
     }
-    std::string id() const noexcept override { return _id; }
+    const std::string &id() const noexcept override { return _id; }
     track_state ready_state() const noexcept override { return _state; }
-    void stop() override;
+    void stop() noexcept override;
     asiortc::task<std::optional<media_frame>> recv() override;
 
     void push_frame(rtp::rtp_packet pkt);

@@ -92,9 +92,9 @@ struct ffmpeg_video_track : public media_track {
 
     media_kind kind() const noexcept override { return media_kind::video; }
     media_format format() const noexcept override;
-    std::string id() const noexcept override { return _id; }
+    const std::string &id() const noexcept override { return _id; }
     track_state ready_state() const noexcept override { return _state; }
-    void stop() override { _state = track_state::ended; }
+    void stop() noexcept override { _state = track_state::ended; }
 
     asioice::task<std::optional<media_frame>> recv() override;
 
@@ -114,9 +114,9 @@ struct ffmpeg_audio_track : public media_track {
     media_format format() const noexcept override {
         return media_format::pcm_s16le;
     }
-    std::string id() const noexcept override { return _id; }
+    const std::string &id() const noexcept override { return _id; }
     track_state ready_state() const noexcept override { return _state; }
-    void stop() override { _state = track_state::ended; }
+    void stop() noexcept override { _state = track_state::ended; }
 
     asioice::task<std::optional<media_frame>> recv() override;
 

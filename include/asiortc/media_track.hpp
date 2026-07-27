@@ -18,10 +18,10 @@ struct media_track {
 
     virtual media_kind kind() const noexcept = 0;
     virtual media_format format() const noexcept = 0;
-    virtual std::string id() const noexcept = 0;
+    virtual const std::string &id() const noexcept = 0;
     virtual track_state ready_state() const noexcept = 0;
 
-    virtual void stop() = 0;
+    virtual void stop() noexcept = 0;
     bool stopped() const noexcept {
         return ready_state() == track_state::ended;
     }

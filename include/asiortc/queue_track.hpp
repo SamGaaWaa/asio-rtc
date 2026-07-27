@@ -16,11 +16,11 @@ struct queue_track : media_track {
 
     media_format format() const noexcept override { return _format; }
 
-    std::string id() const noexcept override { return _id; }
+    const std::string &id() const noexcept override { return _id; }
 
     track_state ready_state() const noexcept override { return _state; }
 
-    void stop() override {
+    void stop() noexcept override {
         _q.close();
         _state = track_state::ended;
     }

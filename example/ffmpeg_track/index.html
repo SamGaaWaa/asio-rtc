@@ -62,11 +62,14 @@
             const ws = new WebSocket('ws://' + location.host + '/ws');
             const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
             var combined = null;
+            let stream_id_set = new Set();
             pc.ontrack = e => {
                 L(T('TRACK kind=' + e.track.kind + ' readyState=' + e.track.readyState + ' mid=' + (e.transceiver ? e.transceiver.mid : '?')));
                 if (!combined) combined = new MediaStream();
                 combined.addTrack(e.track);
                 v.srcObject = combined;
+                for (const s of e.streams)
+                    stream_id_set.add(s.id)
             };
             pc.oniceconnectionstatechange = () => L(T('ICE: ' + pc.iceConnectionState));
             pc.onconnectionstatechange = () => L(T('Conn: ' + pc.connectionState));
@@ -91,6 +94,7 @@
                 const m = JSON.parse(e.data);
                 L(T('Got ' + m.type));
                 await pc.setRemoteDescription(new RTCSessionDescription({ type: m.type, sdp: m.sdp }));
+                console.log(`stream_id_set: ${stream_id_set.size}`);
             };
         })().catch(e => L('FATAL: ' + e));
     </script>

@@ -80,9 +80,9 @@ struct sending_video_track : public media_track {
 
     media_kind kind() const noexcept override { return _kind; }
     media_format format() const noexcept override { return media_format::vp8; }
-    std::string id() const noexcept override { return _id; }
+    const std::string &id() const noexcept override { return _id; }
     track_state ready_state() const noexcept override { return _state; }
-    void stop() override { _state = track_state::ended; }
+    void stop() noexcept override { _state = track_state::ended; }
 
     asioice::task<std::optional<media_frame>> recv() override {
         _timer.expires_after(std::chrono::milliseconds(500));

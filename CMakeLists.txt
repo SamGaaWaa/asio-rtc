@@ -59,6 +59,7 @@ add_subdirectory(third_party/libsrtp)
     src/codecs/vpx_descriptor.cpp
     src/nack_generator.cpp
     src/uuid.cpp
+    src/any_stream_track.cpp
 )
 add_library(asiortc STATIC ${RTC_SRC_FILES})
 target_link_libraries(asiortc PRIVATE asioice OpenSSL::SSL OpenSSL::Crypto srtp3)
@@ -103,15 +104,17 @@ target_include_directories(asiortc_test_flags INTERFACE ${CMAKE_CURRENT_SOURCE_D
 target_include_directories(asiortc_test_flags INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/asio-ice/exsctp/dcsctp/dcsctp)
 
 if(ASIORTC_TEST)
+    find_package(Boost COMPONENTS process CONFIG REQUIRED)
     file(GLOB ASIORTC_TEST_SOURCES
         src/srtp_test.cpp
         src/rtp_rtcp_test.cpp
         src/sdp_test.cpp
+        src/any_stream_track_test.cpp
     )
     foreach(TEST_FILE ${ASIORTC_TEST_SOURCES})
         get_filename_component(EXECUTABLE_NAME ${TEST_FILE} NAME_WE)
         add_executable(${EXECUTABLE_NAME} ${TEST_FILE})
-        target_link_libraries(${EXECUTABLE_NAME} PRIVATE asiortc_test_flags OpenSSL::SSL OpenSSL::Crypto srtp3)
+        target_link_libraries(${EXECUTABLE_NAME} PRIVATE asiortc_test_flags OpenSSL::SSL OpenSSL::Crypto srtp3 Boost::process)
     endforeach()
 endif()
 

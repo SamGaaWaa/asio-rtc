@@ -13,7 +13,7 @@ media_track_impl::media_track_impl(media_kind k, std::string track_id)
       _jitter(std::chrono::milliseconds(500), k == media_kind::video),
       _clock_rate(k == media_kind::audio ? 48000u : 90000u) {}
 
-void media_track_impl::stop() { _state = track_state::ended; }
+void media_track_impl::stop() noexcept { _state = track_state::ended; }
 
 void media_track_impl::push_frame(rtp::rtp_packet pkt) {
     _jitter.push(std::move(pkt));

@@ -4,6 +4,7 @@ project(asio-rtc)
 
 option(ASIORTC_USE_STANDALONE_ASIO "Uses standalone asio" OFF)
 option(ASIORTC_TEST "Build test" ON)
+option(ASIORTC_ENABLE_FFMPEG "Enable ffmpeg-dependent targets" OFF)
 # set(STDEXEC_DIR)
 
 set(CMAKE_CXX_STANDARD 23)
@@ -103,24 +104,43 @@ target_include_directories(asiortc_test_flags INTERFACE ${CMAKE_CURRENT_SOURCE_D
 target_include_directories(asiortc_test_flags INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/asio-ice/exsctp)
 target_include_directories(asiortc_test_flags INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/asio-ice/exsctp/dcsctp/dcsctp)
 
-if(ASIORTC_TEST)
+if(ASIORTC_ENABLE_FFMPEG)
     find_package(Boost COMPONENTS process CONFIG REQUIRED)
+    set(FFMPEG_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ffmpeg)
+    find_path(AVCODEC_INCLUDE_DIR libavcodec/avcodec.h
+        PATHS ${FFMPEG_ROOT}/include /usr/include /usr/local/include)
+    find_library(AVCODEC_LIBRARY avcodec
+        PATHS ${FFMPEG_ROOT}/lib)
+    find_library(AVFORMAT_LIBRARY avformat
+        PATHS ${FFMPEG_ROOT}/lib)
+    find_library(AVUTIL_LIBRARY avutil
+        PATHS ${FFMPEG_ROOT}/lib)
+    find_library(SWSCALE_LIBRARY swscale
+        PATHS ${FFMPEG_ROOT}/lib)
+endif()
+
+if(ASIORTC_TEST)
     file(GLOB ASIORTC_TEST_SOURCES
         src/srtp_test.cpp
         src/rtp_rtcp_test.cpp
         src/sdp_test.cpp
-        src/any_stream_track_test.cpp
     )
     foreach(TEST_FILE ${ASIORTC_TEST_SOURCES})
         get_filename_component(EXECUTABLE_NAME ${TEST_FILE} NAME_WE)
         add_executable(${EXECUTABLE_NAME} ${TEST_FILE})
-        target_link_libraries(${EXECUTABLE_NAME} PRIVATE asiortc_test_flags OpenSSL::SSL OpenSSL::Crypto srtp3 Boost::process)
+        target_link_libraries(${EXECUTABLE_NAME} PRIVATE asiortc_test_flags OpenSSL::SSL OpenSSL::Crypto srtp3)
     endforeach()
+
+    if(ASIORTC_ENABLE_FFMPEG)
+        add_executable(any_stream_track_test src/any_stream_track_test.cpp)
+        target_link_libraries(any_stream_track_test PRIVATE
+            asiortc_test_flags OpenSSL::SSL OpenSSL::Crypto srtp3 Boost::process)
+    endif()
 endif()
 
-add_subdirectory(example/srtp)
 add_subdirectory(example/chat)
-add_subdirectory(example/transceiver_test)
-add_subdirectory(example/ffmpeg_track)
+if(ASIORTC_ENABLE_FFMPEG)
+    add_subdirectory(example/ffmpeg_track)
+endif()
 add_subdirectory(example/sfu)
 add_subdirectory(example/test)

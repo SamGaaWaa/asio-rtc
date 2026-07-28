@@ -7,3 +7,6 @@ test.webm
 include/asiortc/config.hpp
 libdatachannel*
 werift-webrtc
+third_party/ffmpeg
+error.txt
+clang-release-build

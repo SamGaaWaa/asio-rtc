@@ -6,6 +6,8 @@
 
 #include "asiortc/rtp_frame_info.hpp"
 
+namespace asiortc {
+
 enum class media_kind : uint8_t { audio = 0, video = 1 };
 
 enum class media_format : uint16_t {
@@ -25,8 +27,6 @@ inline bool is_encoded_format(media_format fmt) noexcept {
     using enum media_format;
     return fmt == opus || fmt == vp8 || fmt == h264 || fmt == vp9;
 }
-
-namespace asiortc {
 
 struct media_frame {
     media_kind kind{}; // audio / video

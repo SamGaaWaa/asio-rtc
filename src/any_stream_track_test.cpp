@@ -14,6 +14,8 @@ namespace net = boost::asio;
 namespace process = boost::process::v2;
 #endif
 
+#include "mpegts_demuxer.hpp"
+
 #include <exec/start_detached.hpp>
 #include <stdexec/execution.hpp>
 
@@ -26,8 +28,6 @@ namespace process = boost::process::v2;
 
 using namespace asiortc;
 
-namespace mpeg {} // namespace mpeg
-
 #define ASSERT(cond)                                                           \
     do {                                                                       \
         if (!(cond)) {                                                         \
@@ -37,46 +37,59 @@ namespace mpeg {} // namespace mpeg
         }                                                                      \
     } while (0)
 
-static task<void> test_video_file(net::io_context &ctx,
-                                  const std::string &file) {
+static task<void> test_ts_file(net::io_context &ctx, const std::string &file) {
     auto exe = boost::process::v2::environment::find_executable("ffmpeg");
 
-    std::vector<std::string> args = {"-re", "-i",   file, "-map",   "0",
-                                     "-c",  "copy", "-f", "mpegts", "pipe:1"};
+    std::vector<std::string> args = {"-i",   file, "-map",   "0",     "-c",
+                                     "copy", "-f", "mpegts", "pipe:1"};
 
     auto pipe = process::popen(ctx.get_executor(), exe, args);
-    int frame_count = 0;
+
+    detail::MPEGTSDemuxer demuxer;
+    int video_frames = 0;
+    int audio_frames = 0;
+    int ts_packets = 0;
 
     any_stream_track track(
         std::move(pipe),
         [&](std::span<const uint8_t> data,
             std::size_t &consumed) noexcept -> std::optional<media_frame> {
-            if (data.size() < 188) {
-                return {};
-            }
-            consumed = 188;
-            media_frame f;
-            f.kind = media_kind::video;
-            f.format = media_format::unknown;
-            f.timestamp = 0;
-            f.width = 0;
-            f.height = 0;
-            f.data = std::vector<uint8_t>(data.begin(), data.begin() + 188);
-            frame_count++;
-            return f;
+            ts_packets++;
+            auto r = demuxer.parse(data, consumed);
+            if (r)
+                return r;
+            return {};
         },
         media_kind::video, media_format::unknown);
-    track.set_max_cache_size(4096);
+    track.set_max_cache_size(1 << 20);
 
     for (int i = 0; track.ready_state() != track_state::ended; ++i) {
         auto frame = co_await track.recv();
         if (!frame)
             break;
-        if (i % 10 == 0)
-            std::cout << "frame " << i + 1 << '\n';
+
+        if (frame->kind == media_kind::video) {
+            video_frames++;
+        } else {
+            audio_frames++;
+        }
     }
 
-    std::cout << "  video file popen OK (" << frame_count << " frames)\n";
+    for (;;) {
+        std::size_t dummy = 0;
+        auto frame = demuxer.parse({}, dummy);
+        if (!frame)
+            break;
+        if (frame->kind == media_kind::video)
+            video_frames++;
+        else
+            audio_frames++;
+    }
+
+    std::cout << "  TS demux: " << ts_packets << " packets, " << video_frames
+              << " video frames, " << audio_frames << " audio frames\n";
+
+    ASSERT(ts_packets > 0);
 }
 
 int main(int argc, char **argv) {
@@ -90,9 +103,9 @@ int main(int argc, char **argv) {
 
     exec::start_detached(stdexec::starts_on(
         asioice::utils::scheduler{ctx},
-        [](net::io_context &ctx, const std::string &file_path) -> task<void> {
+        [](net::io_context &ctx, const std::string &fp) -> task<void> {
             try {
-                co_await test_video_file(ctx, file_path);
+                co_await test_ts_file(ctx, fp);
                 std::cout << "ALL TESTS PASSED\n";
             } catch (const std::exception &e) {
                 std::cerr << "FAIL: exception: " << e.what() << '\n';

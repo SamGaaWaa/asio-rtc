@@ -381,20 +381,8 @@ asiortc::task<void> connection_impl::apply_descriptions() {
 void connection_impl::start_gathering() {
     _gathering_state = ice_gathering_state_t::gathering;
     _gathering_task = stdexec::spawn_future(
-        stdexec::starts_on(
-            stdexec::inline_scheduler{},
-            exec::finally(
-                this->_agent.gather_candidates() | stdexec::then([this] {
-                    if (!_local_desc)
-                        return;
-                    for (const auto &c : this->_agent.local_candidates())
-                        _local_desc->candidates.push_back(c.to_sdp());
-                }),
-                stdexec::just() | stdexec::then([this] {
-                    // this->_gathering_task.reset();
-                    if (_gathering_state == ice_gathering_state_t::gathering)
-                        _gathering_state = ice_gathering_state_t::complete;
-                }))),
+        stdexec::starts_on(stdexec::inline_scheduler{},
+                           this->_agent.gather_candidates()),
         _scope.get_token());
 }
 
@@ -403,6 +391,8 @@ void connection_impl::do_on_candidates(std::span<const asioice::candidate> cc) {
         for (const auto &c : cc)
             _local_desc->candidates.push_back(c.to_sdp());
     }
+    if (cc.empty() && _gathering_state == ice_gathering_state_t::gathering)
+        _gathering_state = ice_gathering_state_t::complete;
     if (_on_candidates)
         _on_candidates(cc);
 }
@@ -665,8 +655,10 @@ connection_impl::set_local_description(session_description desc) {
             ++t_it;
         }
         _signaling_state = signaling_state_t::have_local_offer;
-    } else
+    } else {
         _signaling_state = signaling_state_t::have_local_pranswer;
+    }
+    _agent.config().ice_controlling = is_offer;
 
     co_await apply_descriptions();
     _rebuild_pt_maps();
@@ -874,6 +866,7 @@ connection_impl::set_remote_description(session_description desc) {
         }
         _signaling_state = signaling_state_t::have_remote_pranswer;
     }
+    _agent.config().ice_controlling = !is_offer;
 
     co_await apply_descriptions();
     _rebuild_pt_maps();
@@ -1051,8 +1044,8 @@ connection_impl::create_data_channel(std::string label,
             "set_local_description or set_remote_description"};
 
     _need_sctp = true;
-    return std::shared_ptr<asiortc::data_channel>(new asiortc::data_channel(
-        weak_from_this(), std::move(label), std::move(options)));
+    return std::make_shared<asiortc::data_channel>(
+        weak_from_this(), std::move(label), std::move(options));
 }
 
 std::shared_ptr<rtp_transceiver>
@@ -1445,9 +1438,8 @@ void connection_impl::do_on_data_channel(
     std::shared_ptr<connection_impl::data_channel_type> p) {
     assert(p);
     if (_on_remote_channel_cb) {
-        auto ch =
-            std::shared_ptr<asiortc::data_channel>(new asiortc::data_channel(
-                this->weak_from_this(), p->label(), p->options()));
+        auto ch = std::make_shared<asiortc::data_channel>(
+            this->weak_from_this(), p->label(), p->options());
         ch->_channel = std::move(p);
         _on_remote_channel_cb(std::move(ch));
     }

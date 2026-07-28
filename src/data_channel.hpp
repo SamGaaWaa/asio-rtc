@@ -33,6 +33,11 @@ struct data_channel {
     using ready_state_t = typename asioice_dc::state_t;
     using data_channel_priority = asioice::impl::data_channel_priority;
 
+    data_channel(std::weak_ptr<connection_impl> conn, std::string label,
+                 options opts)
+        : _conn{std::move(conn)}, _label{std::move(label)},
+          _options{std::move(opts)} {}
+
     uint16_t stream_id() const noexcept { return _options.stream_id; }
     const std::string &label() const noexcept { return _label; }
     const std::string &protocol() const noexcept { return _options.protocol; }
@@ -57,11 +62,6 @@ struct data_channel {
 
   private:
     friend struct connection_impl;
-
-    data_channel(std::weak_ptr<connection_impl> conn, std::string label,
-                 options opts)
-        : _conn{std::move(conn)}, _label{std::move(label)},
-          _options{std::move(opts)} {}
 
     std::weak_ptr<connection_impl> _conn;
     std::string _label;

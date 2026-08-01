@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include <string>
 #include <ranges>
+#include <mutex>
 
 #include <boost/container/static_vector.hpp>
 
@@ -24,6 +25,8 @@
 #include "media_track_impl.hpp"
 #include "rtcp.hpp"
 #include "asiortc/rtp.hpp"
+#include "samlog.hpp"
+#include "rtc_base/logging.h"
 
 #include "codecs/default_h264.hpp"
 #include "codecs/default_opus.hpp"
@@ -31,7 +34,91 @@
 
 namespace asiortc {
 
-static constexpr std::size_t max_ssrc_count = 40;
+struct dcsctp_log_sink final : webrtc::LogSink {
+    dcsctp_log_sink() {}
+
+    auto log(webrtc::LoggingSeverity severity) {
+        return samlog::__log_from_generator(samlog::logger_instance().get(),
+                                            severity_to_level(severity));
+    }
+
+    void OnLogMessage(const std::string &msg, webrtc::LoggingSeverity severity,
+                      const char *tag) override {
+        log(severity) << [&](auto sink) { sink("[{}]: {}\n", tag, msg); };
+    }
+
+    void OnLogMessage(const std::string &message,
+                      webrtc::LoggingSeverity severity) override {
+        log(severity) << [&](auto sink) { sink(message); };
+    }
+
+    void OnLogMessage(const std::string &message) override {
+#ifdef NDEBUG
+        OnLogMessage(message, webrtc::LoggingSeverity::LS_INFO);
+#else
+        OnLogMessage(message, webrtc::LoggingSeverity::LS_VERBOSE);
+#endif
+    }
+
+    void OnLogMessage(std::string_view msg, webrtc::LoggingSeverity severity,
+                      const char *tag) override {
+        log(severity) << [&](auto sink) { sink("[{}]: {}\n", tag, msg); };
+    }
+
+    void OnLogMessage(std::string_view message,
+                      webrtc::LoggingSeverity severity) override {
+        log(severity) << [&](auto sink) { sink(message); };
+    }
+
+    void OnLogMessage(std::string_view message) override {
+#ifdef NDEBUG
+        OnLogMessage(message, webrtc::LoggingSeverity::LS_INFO);
+#else
+        OnLogMessage(message, webrtc::LoggingSeverity::LS_VERBOSE);
+#endif
+    }
+
+    void OnLogMessage(const webrtc::LogLineRef &line) override {
+        log(line.severity()) << [&](auto sink) {
+            sink("[{}][{}:{}]: {}\n", line.tag(), line.filename(), line.line(),
+                 line.message());
+        };
+    }
+
+    static constexpr samlog::log_level
+    severity_to_level(webrtc::LoggingSeverity severity) {
+        switch (severity) {
+        case webrtc::LoggingSeverity::LS_VERBOSE:
+            return samlog::log_level::debug;
+        case webrtc::LoggingSeverity::LS_INFO:
+            return samlog::log_level::info;
+        case webrtc::LoggingSeverity::LS_WARNING:
+            return samlog::log_level::warn;
+        case webrtc::LoggingSeverity::LS_ERROR:
+            return samlog::log_level::error;
+        case webrtc::LoggingSeverity::LS_NONE:
+            return samlog::log_level::off;
+        }
+    }
+};
+
+static webrtc::LoggingConfig get_dcsctp_log_config() {
+    webrtc::LoggingConfig config;
+    config.AddSink(std::make_unique<dcsctp_log_sink>());
+    config.set_debug_severity(webrtc::LoggingSeverity::LS_WARNING);
+#ifndef NDEBUG
+    config.set_min_severity(webrtc::LoggingSeverity::LS_VERBOSE);
+#endif
+    return config;
+}
+
+static void init_dcsctp_logger() {
+    static std::once_flag flag;
+    std::call_once(flag, [] {
+        if (!webrtc::InitializeLogging(get_dcsctp_log_config()))
+            throw std::runtime_error{"InitializeLogging failed"};
+    });
+}
 
 static std::string to_string(signaling_state_t s) {
     switch (s) {
@@ -106,7 +193,7 @@ asiortc::task<void>
 connection_impl::_sender_send_loop(std::shared_ptr<rtp_sender> sender,
                                    std::shared_ptr<srtp_transport_type> srtp) {
     asioice::utils::scope_guard on_exit([]() noexcept {
-        ICE_IN_DEBUG { std::cout << "_sender_send_loop exited\n"; }
+        SAMLOG_INFO(auto sink) { sink("_sender_send_loop exited\n"); };
     });
     std::vector<uint8_t> enc_buf;
 
@@ -534,7 +621,7 @@ asiortc::task<void> connection_impl::do_connect() {
                 stdexec::continues_on(asioice::utils::scheduler{_executor}));
     }
     if (!co_await _agent.connect()) {
-        ICE_IN_DEBUG { std::cerr << "ICE connect failed\n"; }
+        SAMLOG_INFO(auto sink) { sink("ICE connect failed\n"); };
         co_return;
     }
     _ice_send_loop =
@@ -549,9 +636,11 @@ asiortc::task<void> connection_impl::do_connect() {
                          : dtls_transport_type::handshake_type::server;
     auto hs_ec = co_await _dtls_transport->async_handshake(dtls_role);
     if (hs_ec) {
-        ICE_IN_DEBUG {
-            std::cerr << "DTLS handshake failed: " << hs_ec.message() << '\n';
-        }
+        SAMLOG_INFO(auto sink) {
+            char buf[256];
+            sink({buf, sizeof(buf)}, "DTLS handshake failed: {}\n",
+                 hs_ec.message());
+        };
         co_return;
     }
 
@@ -603,6 +692,7 @@ asiortc::task<void> connection_impl::do_connect() {
         co_return;
     }
 
+    init_dcsctp_logger();
     _sctp_transport = std::make_shared<sctp_transport_type>(_dtls_transport);
     _sctp_transport->start();
 
@@ -613,7 +703,7 @@ asiortc::task<void> connection_impl::do_connect() {
         sctp_ok = co_await _sctp_transport->connect();
     }
     if (!sctp_ok) {
-        ICE_IN_DEBUG { std::cerr << "SCTP setup failed\n"; }
+        SAMLOG_INFO(auto sink) { sink("SCTP setup failed\n"); };
         co_return;
     }
 
@@ -1136,7 +1226,7 @@ asiortc::task<void> connection_impl::_sender_rtcp_loop(
     std::shared_ptr<rtp_sender> sender,
     std::shared_ptr<connection_impl::srtp_transport_type> srtp) {
     asioice::utils::scope_guard on_exit([]() noexcept {
-        ICE_IN_DEBUG { std::cout << "_sender_rtcp_loop exited\n"; }
+        SAMLOG_INFO(auto sink) { sink("_sender_rtcp_loop exited\n"); };
     });
     static thread_local std::random_device rd;
     std::mt19937 gen(rd());
@@ -1179,7 +1269,7 @@ asiortc::task<void> connection_impl::_receiver_rtcp_loop(
     std::shared_ptr<rtp_receiver> receiver,
     std::shared_ptr<connection_impl::srtp_transport_type> srtp) {
     asioice::utils::scope_guard on_exit([]() noexcept {
-        ICE_IN_DEBUG { std::cout << "_receiver_rtcp_loop exited\n"; }
+        SAMLOG_INFO(auto sink) { sink("_receiver_rtcp_loop exited\n"); };
     });
     static thread_local std::random_device rd;
     static thread_local std::mt19937 gen(rd());

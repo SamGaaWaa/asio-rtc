@@ -217,6 +217,8 @@ static task<void> listener(net::io_context &ctx) {
 int main() {
     std::cout << std::unitbuf;
     net::io_context ctx;
+    asiortc::set_logger(std::make_shared<logger_interface>(),
+                        ctx.get_executor());
     exec::start_detached(
         stdexec::starts_on(utils::scheduler{ctx}, listener(ctx)));
     ctx.run();

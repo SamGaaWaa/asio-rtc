@@ -1,5 +1,6 @@
 #include "asioice/config.hpp"
 #include "srtp_transport.hpp"
+#include "samlog.hpp"
 
 #include <cassert>
 #include <mutex>
@@ -14,9 +15,10 @@ namespace asiortc {
 
 static void srtp_log_func(srtp_log_level_t level, const char *msg,
                           void *data) noexcept {
-    ICE_IN_DEBUG {
-        std::cout << "srtp_log_level_t " << level << ": " << msg << '\n';
-    }
+    SAMLOG_INFO(auto sink) {
+        char buf[256];
+        sink({buf, sizeof(buf)}, "srtp_log_level_t {}: {}\n", (int)level, msg);
+    };
 }
 
 static const char *status_to_string(srtp_err_status_t s) noexcept {
@@ -214,10 +216,11 @@ srtp_transport_base::protect_rtp(std::span<const uint8_t> input,
         ::srtp_protect(static_cast<::srtp_t>(_send_session), input.data(),
                        input.size(), output.data(), &cap, 0);
     if (ret != srtp_err_status_ok) {
-        ICE_IN_DEBUG {
-            std::cerr << "srtp_protect failed: " << status_to_string(ret)
-                      << '\n';
-        }
+        SAMLOG_WARN(auto sink) {
+            char buf[256];
+            sink({buf, sizeof(buf)}, "srtp_protect failed: {}\n",
+                 status_to_string(ret));
+        };
         return {};
     }
     return {output.data(), cap};
@@ -231,10 +234,11 @@ srtp_transport_base::unprotect_rtp(std::span<const uint8_t> input,
         ::srtp_unprotect(static_cast<::srtp_t>(_recv_session), input.data(),
                          input.size(), output.data(), &cap);
     if (ret != srtp_err_status_ok) {
-        ICE_IN_DEBUG {
-            std::cerr << "srtp_unprotect failed: " << status_to_string(ret)
-                      << '\n';
-        }
+        SAMLOG_WARN(auto sink) {
+            char buf[256];
+            sink({buf, sizeof(buf)}, "srtp_unprotect failed: {}\n",
+                 status_to_string(ret));
+        };
         return {};
     }
     return {output.data(), cap};
@@ -248,10 +252,11 @@ srtp_transport_base::protect_rtcp(std::span<const uint8_t> input,
         ::srtp_protect_rtcp(static_cast<::srtp_t>(_send_session), input.data(),
                             input.size(), output.data(), &cap, 0);
     if (ret != srtp_err_status_ok) {
-        ICE_IN_DEBUG {
-            std::cerr << "srtp_protect_rtcp failed: " << status_to_string(ret)
-                      << '\n';
-        }
+        SAMLOG_WARN(auto sink) {
+            char buf[256];
+            sink({buf, sizeof(buf)}, "srtp_protect_rtcp failed: {}\n",
+                 status_to_string(ret));
+        };
         return {};
     }
     return {output.data(), cap};
@@ -265,10 +270,11 @@ srtp_transport_base::unprotect_rtcp(std::span<const uint8_t> input,
         ::srtp_unprotect_rtcp(static_cast<::srtp_t>(_recv_session),
                               input.data(), input.size(), output.data(), &cap);
     if (ret != srtp_err_status_ok) {
-        ICE_IN_DEBUG {
-            std::cerr << "srtp_unprotect_rtcp failed: " << status_to_string(ret)
-                      << '\n';
-        }
+        SAMLOG_INFO(auto sink) {
+            char buf[256];
+            sink({buf, sizeof(buf)}, "srtp_unprotect_rtcp failed: {}\n",
+                 status_to_string(ret));
+        };
         return {};
     }
     return {output.data(), cap};

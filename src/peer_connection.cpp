@@ -1,5 +1,17 @@
 #include "asiortc/peer_connection.hpp"
 
+#if ASIORTC_USE_STANDALONE_ASIO
+#include <asio/dispatch.hpp>
+namespace asiortc {
+namespace net = asio;
+}
+#else
+#include <boost/asio/dispatch.hpp>
+namespace asiortc {
+namespace net = boost::asio;
+}
+#endif
+
 #include "candidate_convert.hpp"
 #include "connection_impl.hpp"
 #include "rtp_transceiver.hpp"
@@ -14,12 +26,23 @@ static void throw_if_nullptr(const auto &ptr, const char *msg) {
         throw std::runtime_error(std::string{"null pointer: "} + msg);
 }
 
+void set_logger(std::shared_ptr<logger_interface> logger,
+                net::any_io_executor ex) {
+    net::dispatch(
+        [l = std::move(logger)]() mutable { samlog::set_logger(std::move(l)); },
+        std::move(ex), [] {});
+}
+
 peer_connection::peer_connection(net::any_io_executor ex, configuration cfg)
     : _impl{std::make_shared<connection_impl>(std::move(ex), std::move(cfg))} {}
 
 peer_connection::executor_type peer_connection::get_executor() const {
     throw_if_nullptr(_impl, "get_executor");
     return _impl->get_executor();
+}
+
+void peer_connection::set_logger(std::shared_ptr<logger_interface> logger) {
+    ::asiortc::set_logger(std::move(logger), get_executor());
 }
 
 task<session_description> peer_connection::create_offer() {

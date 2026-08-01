@@ -36,8 +36,13 @@ namespace net = boost::asio;
 #include "asiortc/codecs/base.hpp"
 #include "asiortc/datachannel.hpp"
 #include "asioice/detail/asio2exec.hpp"
+#include "samlog.hpp"
 
 namespace asiortc {
+
+using namespace samlog;
+void set_logger(std::shared_ptr<logger_interface> logger,
+                net::any_io_executor ex);
 
 namespace utils {
 using asioice::utils::scheduler;
@@ -98,6 +103,8 @@ struct peer_connection {
     utils::scheduler get_scheduler() const {
         return utils::scheduler{get_executor()};
     }
+
+    void set_logger(std::shared_ptr<logger_interface> logger);
 
     asiortc::task<session_description> create_offer();
     asiortc::task<session_description> create_answer();

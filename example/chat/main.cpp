@@ -11,6 +11,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <algorithm>
 
 using namespace asiortc;
 
@@ -258,10 +259,16 @@ static task<void> chat_session(net::io_context &ctx) try {
     std::cout << "\nError: " << e.what() << "\n";
 }
 
-int main() {
-    std::cout << std::unitbuf;
+int main(int argc, char **argv) {
     net::io_context ctx;
-    auto work = net::make_work_guard(ctx);
+    if (argc > 1 && std::any_of(argv + 1, argv + argc, [](const char *cmd) {
+            return std::string_view{cmd} == "--log";
+        })) {
+        asiortc::set_logger(std::make_shared<asiortc::logger_interface>(
+                                asiortc::log_level::info),
+                            ctx.get_executor());
+    }
+    std::cout << std::unitbuf;
     exec::start_detached(
         stdexec::starts_on(asiortc::utils::scheduler{ctx}, chat_session(ctx)));
     ctx.run();

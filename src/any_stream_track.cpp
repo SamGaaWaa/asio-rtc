@@ -1,13 +1,13 @@
 #include "asiortc/any_stream_track.hpp"
 #include "asiortc/detail/uuid.hpp"
 #include "asioice/detail/async_mutex.hpp"
+#include "samlog.hpp"
 
 #include <vector>
 #include <cstdint>
 #include <cassert>
 #include <deque>
 #include <algorithm>
-#include <iostream>
 
 namespace asiortc {
 
@@ -131,18 +131,20 @@ any_stream_track::impl_t::read_frame() {
     while (true) {
         auto [ec, n] = co_await this->read_some();
         if (ec) {
-            ICE_IN_DEBUG {
-                std::cerr << "any_stream_track::impl_t::read_frame failed: "
-                          << ec.message() << '\n';
-            }
+            SAMLOG_WARN(auto sink) {
+                char buf[256];
+                sink({buf, sizeof(buf)},
+                     "any_stream_track::impl_t::read_frame failed: {}\n",
+                     ec.message());
+            };
             _state = track_state::ended;
             co_return {};
         }
         if (n == 0) {
-            ICE_IN_DEBUG {
-                std::cerr << "any_stream_track::impl_t::read_frame failed: "
-                             "file end\n";
-            }
+            SAMLOG_WARN(auto sink) {
+                sink("any_stream_track::impl_t::read_frame failed: "
+                     "file end\n");
+            };
             _state = track_state::ended;
             co_return {};
         }

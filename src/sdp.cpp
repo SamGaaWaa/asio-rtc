@@ -1,4 +1,5 @@
 #include "sdp.hpp"
+#include "samlog.hpp"
 
 #include <charconv>
 #include <cstdint>
@@ -10,8 +11,10 @@
 
 namespace asiortc {
 
-std::vector<std::string_view> split_lines(std::string_view s) {
-    std::vector<std::string_view> lines;
+using splited_result = std::vector<std::string_view>;
+
+static void split_lines(splited_result &lines, std::string_view s) {
+    lines.clear();
     while (!s.empty()) {
         auto nl = s.find('\n');
         auto line = s.substr(0, nl);
@@ -25,8 +28,7 @@ std::vector<std::string_view> split_lines(std::string_view s) {
         lines.push_back(line);
         s.remove_prefix(nl + 1);
     }
-    return lines;
-} // anonymous namespace
+}
 
 std::pair<std::string_view, std::string_view>
 split_attr(std::string_view attr) {
@@ -36,11 +38,11 @@ split_attr(std::string_view attr) {
     return {attr.substr(0, colon), attr.substr(colon + 1)};
 }
 
-std::vector<std::string_view> split_whitespace(std::string_view s) {
-    std::vector<std::string_view> parts;
+void split_whitespace(splited_result &parts, std::string_view s) {
+    parts.clear();
     auto start = s.find_first_not_of(' ');
     if (start == std::string_view::npos)
-        return parts;
+        return;
     s.remove_prefix(start);
     while (!s.empty()) {
         auto end = s.find(' ');
@@ -54,7 +56,6 @@ std::vector<std::string_view> split_whitespace(std::string_view s) {
             break;
         s.remove_prefix(next);
     }
-    return parts;
 }
 
 std::optional<uint64_t> parse_uint64(std::string_view s) {
@@ -170,16 +171,24 @@ std::optional<sdp_rtcp_fb> parse_rtcpfb(std::string_view value) {
     return fb;
 }
 
-void apply_session_attr(session_description &session, std::string_view name,
-                        std::string_view value) {
+static bool apply_session_attr(session_description &session,
+                               std::string_view name, std::string_view value) {
     std::string vstr(value);
+    splited_result parts;
     if (name == "group") {
-        auto parts = split_whitespace(value);
-        if (!parts.empty() && parts[0] == "BUNDLE") {
+        split_whitespace(parts, value);
+        if (parts.empty())
+            return false;
+        if (parts.front() == "BUNDLE") {
             std::vector<std::string> mids;
             for (std::size_t i = 1; i < parts.size(); ++i)
                 mids.emplace_back(parts[i]);
-            session.bundle_groups.push_back(std::move(mids));
+            session.groups.emplace_back("BUNDLE", std::move(mids));
+        } else if (parts.front() == "LS") {
+            std::vector<std::string> mids;
+            for (std::size_t i = 1; i < parts.size(); ++i)
+                mids.emplace_back(parts[i]);
+            session.groups.emplace_back("LS", std::move(mids));
         }
     } else if (name == "ice-ufrag") {
         session.ice_ufrag = vstr;
@@ -194,7 +203,7 @@ void apply_session_attr(session_description &session, std::string_view name,
     } else if (name == "candidate") {
         session.candidates.push_back("candidate:" + vstr);
     } else if (name == "msid-semantic") {
-        auto parts = split_whitespace(value);
+        split_whitespace(parts, value);
         if (!parts.empty()) {
             session.msid_semantic = std::string(parts[0]);
             for (std::size_t i = 1; i < parts.size(); ++i)
@@ -203,6 +212,8 @@ void apply_session_attr(session_description &session, std::string_view name,
     } else {
         session.attributes.emplace_back(std::string(name), vstr);
     }
+
+    return true;
 }
 
 void apply_media_attr(sdp_media &media, std::string_view name,
@@ -276,46 +287,68 @@ void apply_media_attr(sdp_media &media, std::string_view name,
     }
 }
 
-session_description parse_sdp(std::string_view sdp_text, std::string type) {
+#define REPORT_ERROR(LL)                                                       \
+    [](std::string_view line) -> std::optional<session_description> {          \
+        SAMLOG_WARN(auto sink) {                                               \
+            char buf[256];                                                     \
+            sink({buf, sizeof(buf)}, "parse \"{}\" failed\n", (line));         \
+        };                                                                     \
+        return {};                                                             \
+    }(LL)
+
+std::optional<session_description> parse_sdp(std::string_view sdp_text,
+                                             std::string type) {
     session_description session;
     session.type = std::move(type);
 
     sdp_media *current_media = nullptr;
 
-    auto lines = split_lines(sdp_text);
+    splited_result lines;
+    lines.reserve(64);
+    split_lines(lines, sdp_text);
 
+    splited_result parts;
     for (auto line : lines) {
         if (line.empty())
             continue;
 
         if (line.starts_with("v=")) {
             auto v = parse_uint8(line.substr(2));
-            if (v)
-                session.version = *v;
+            if (!v)
+                return REPORT_ERROR(line);
+            session.version = *v;
         } else if (line.starts_with("o=")) {
-            auto parts = split_whitespace(line.substr(2));
-            if (parts.size() >= 6) {
-                session.origin.username = parts[0];
-                if (auto sid = parse_uint64(parts[1]))
-                    session.origin.session_id = *sid;
-                if (auto sv = parse_uint64(parts[2]))
-                    session.origin.session_version = *sv;
-                session.origin.nettype = parts[3];
-                session.origin.addrtype = parts[4];
-                session.origin.addr = parts[5];
-            }
+            split_whitespace(parts, line.substr(2));
+            if (parts.size() < 6)
+                return REPORT_ERROR(line);
+            session.origin.username = parts[0];
+            if (auto sid = parse_uint64(parts[1]); sid)
+                session.origin.session_id = *sid;
+            else
+                return REPORT_ERROR(line);
+            if (auto sv = parse_uint64(parts[2]); sv)
+                session.origin.session_version = *sv;
+            else
+                return REPORT_ERROR(line);
+            session.origin.nettype = parts[3];
+            session.origin.addrtype = parts[4];
+            session.origin.addr = parts[5];
         } else if (line.starts_with("s=")) {
             session.session_name = line.substr(2);
         } else if (line.starts_with("t=")) {
-            auto parts = split_whitespace(line.substr(2));
+            split_whitespace(parts, line.substr(2));
             if (parts.size() >= 2) {
-                if (auto start = parse_uint64(parts[0]))
+                if (auto start = parse_uint64(parts[0]); start)
                     session.timing.start = *start;
-                if (auto stop = parse_uint64(parts[1]))
+                else
+                    return REPORT_ERROR(line);
+                if (auto stop = parse_uint64(parts[1]); stop)
                     session.timing.stop = *stop;
+                else
+                    return REPORT_ERROR(line);
             }
         } else if (line.starts_with("c=")) {
-            auto parts = split_whitespace(line.substr(2));
+            split_whitespace(parts, line.substr(2));
             if (parts.size() >= 3) {
                 if (current_media) {
                     current_media->conn_nettype = parts[0];
@@ -328,16 +361,18 @@ session_description parse_sdp(std::string_view sdp_text, std::string type) {
                 }
             }
         } else if (line.starts_with("m=")) {
-            auto parts = split_whitespace(line.substr(2));
+            split_whitespace(parts, line.substr(2));
             if (parts.size() >= 3) {
                 sdp_media media;
                 media.media_type = parts[0];
-                if (auto port = parse_uint16(parts[1]))
+                if (auto port = parse_uint16(parts[1]); port)
                     media.port = *port;
+                else
+                    return REPORT_ERROR(line);
                 media.proto = parts[2];
                 for (std::size_t i = 3; i < parts.size(); ++i) {
                     media.fmts.emplace_back(parts[i]);
-                    if (auto pt = parse_uint8(parts[i]))
+                    if (auto pt = parse_uint8(parts[i]); pt)
                         media.payload_types.push_back(*pt);
                 }
                 session.medias.push_back(std::move(media));
@@ -347,8 +382,10 @@ session_description parse_sdp(std::string_view sdp_text, std::string type) {
             auto [name, value] = split_attr(line.substr(2));
             if (current_media)
                 apply_media_attr(*current_media, name, value);
-            else
-                apply_session_attr(session, name, value);
+            else {
+                if (!apply_session_attr(session, name, value))
+                    return REPORT_ERROR(line);
+            }
         }
     }
 
@@ -358,6 +395,7 @@ session_description parse_sdp(std::string_view sdp_text, std::string type) {
 std::string session_description::to_string() const {
     const auto &sdp = *this;
     std::string out;
+    out.reserve(128);
 
     out += "v=";
     out += std::to_string(sdp.version);
@@ -407,16 +445,9 @@ std::string session_description::to_string() const {
         out += "\r\n";
     }
 
-    if (!sdp.bundle_groups.empty()) {
-        for (const auto &grp : sdp.bundle_groups) {
-            out += "a=group:BUNDLE";
-            for (const auto &mid : grp) {
-                out += " ";
-                out += mid;
-            }
-            out += "\r\n";
-        }
-    }
+    for (const auto &grp : sdp.groups)
+        grp.to_string(out);
+
     if (!sdp.ice_ufrag.empty())
         out += "a=ice-ufrag:" + sdp.ice_ufrag + "\r\n";
     if (!sdp.ice_pwd.empty())
@@ -529,9 +560,17 @@ std::string session_description::to_string() const {
             out += "\r\n";
         }
         for (const auto &rid : m.rids)
-            out += "a=rid:" + rid + "\r\n";
-        if (!m.simulcast.empty())
-            out += "a=simulcast:" + m.simulcast + "\r\n";
+            out += "a=rid:" + rid +
+                   " send\r\n"; // TODO: handle simulcast parameters
+        if (m.rids.size() > 1) {
+            out += "a=simulcast:send ";
+            for (const auto &rid : m.rids) {
+                out += rid;
+                out += ';';
+            }
+            out.pop_back();
+            out += "\r\n";
+        }
 
         if (!m.ice_ufrag.empty())
             out += "a=ice-ufrag:" + m.ice_ufrag + "\r\n";
@@ -586,6 +625,16 @@ const char *direction_str(sdp_direction d) {
         return "inactive";
     }
     return "sendrecv";
+}
+
+void sdp_group::to_string(std::string &dst) const {
+    dst += "a=group:";
+    dst += this->semantic;
+    for (const auto &item : this->items) {
+        dst += ' ';
+        dst += item;
+    }
+    dst += "\r\n";
 }
 
 } // namespace asiortc

@@ -184,6 +184,10 @@ struct rtp_transceiver : std::enable_shared_from_this<rtp_transceiver> {
     sdp_media to_answer_sdp_media(const sdp_media &remote_media) const;
     void from_remote_sdp(const sdp_media &remote);
 
+    std::optional<std::size_t> mline_index() const noexcept { return _m_idx; }
+
+    void set_mline_index(std::size_t idx) const noexcept { _m_idx = idx; }
+
   private:
     void apply_simulcast_to(sdp_media &m) const;
 
@@ -193,6 +197,7 @@ struct rtp_transceiver : std::enable_shared_from_this<rtp_transceiver> {
   private:
     friend struct connection_impl;
 
+    mutable std::optional<std::size_t> _m_idx{};
     media_kind _kind = media_kind::video;
     std::weak_ptr<connection_impl> _conn;
     std::string _mid{};

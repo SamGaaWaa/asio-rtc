@@ -102,7 +102,7 @@ static task<nlohmann::json> test_case_1_basic_video(net::io_context &ctx,
         auto msg = co_await ws_recv(ws);
         if (msg["type"] != "offer")
             throw std::runtime_error("expected offer");
-        auto offer = parse_sdp(msg["sdp"].get<std::string>(), "offer");
+        auto offer = parse_sdp(msg["sdp"].get<std::string>(), "offer").value();
 
         auto tr = conn.add_transceiver(
             media_kind::video,
@@ -110,9 +110,7 @@ static task<nlohmann::json> test_case_1_basic_video(net::io_context &ctx,
         tr.sender().set_track(std::make_shared<queue_track>(media_kind::video));
 
         co_await conn.set_remote_description(std::move(offer));
-        auto answer = co_await conn.create_answer();
-        co_await conn.set_local_description(
-            parse_sdp(answer.to_string(), "answer"));
+        co_await conn.set_local_description(co_await conn.create_answer());
 
         co_await wait_until_ice_gather(conn, timer);
         co_await ws_send(ws, {{"type", "answer"},
@@ -151,7 +149,7 @@ static task<nlohmann::json> test_case_2_audio_video(net::io_context &ctx,
         auto msg = co_await ws_recv(ws);
         if (msg["type"] != "offer")
             throw std::runtime_error("expected offer");
-        auto offer = parse_sdp(msg["sdp"].get<std::string>(), "offer");
+        auto offer = parse_sdp(msg["sdp"].get<std::string>(), "offer").value();
 
         std::vector<rtp_transceiver_interface> trs;
         trs.push_back(conn.add_transceiver(
@@ -166,9 +164,7 @@ static task<nlohmann::json> test_case_2_audio_video(net::io_context &ctx,
             std::make_shared<queue_track>(media_kind::video));
 
         co_await conn.set_remote_description(std::move(offer));
-        auto answer = co_await conn.create_answer();
-        co_await conn.set_local_description(
-            parse_sdp(answer.to_string(), "answer"));
+        co_await conn.set_local_description(co_await conn.create_answer());
 
         co_await wait_until_ice_gather(conn, timer);
         co_await ws_send(ws, {{"type", "answer"},
@@ -217,13 +213,15 @@ static task<nlohmann::json> test_case_3_dc_echo(net::io_context &ctx,
         auto msg = co_await ws_recv(ws);
         if (msg["type"] != "offer")
             throw std::runtime_error("expected offer");
-        auto offer = parse_sdp(msg["sdp"].get<std::string>(), "offer");
+        auto offer = parse_sdp(msg["sdp"].get<std::string>(), "offer").value();
 
         co_await conn.set_remote_description(std::move(offer));
-        auto answer = co_await conn.create_answer();
-        co_await conn.set_local_description(
-            parse_sdp(answer.to_string(), "answer"));
-
+        {
+            auto answer = co_await conn.create_answer();
+            auto str = answer.to_string();
+            std::cout << "\n[ANSWER]:\n" << str << "\n\n";
+            co_await conn.set_local_description(std::move(answer));
+        }
         co_await wait_until_ice_gather(conn, timer);
         co_await ws_send(ws, {{"type", "answer"},
                               {"sdp", conn.local_description()->to_string()}});
@@ -305,7 +303,7 @@ static task<nlohmann::json> test_case_4_cxx_offerer(net::io_context &ctx,
         std::cout << "[test:4] JS answer:\n"
                   << ans["sdp"].get<std::string>() << '\n';
         co_await conn.set_remote_description(
-            parse_sdp(ans["sdp"].get<std::string>(), "answer"));
+            parse_sdp(ans["sdp"].get<std::string>(), "answer").value());
         if (on_track_call != 1) {
             throw std::runtime_error{"on_track should invoke 2 times"};
         }
@@ -339,7 +337,7 @@ static task<nlohmann::json> test_case_5_multi_transceiver(net::io_context &ctx,
         auto msg = co_await ws_recv(ws);
         if (msg["type"] != "offer")
             throw std::runtime_error("expected offer");
-        auto offer = parse_sdp(msg["sdp"].get<std::string>(), "offer");
+        auto offer = parse_sdp(msg["sdp"].get<std::string>(), "offer").value();
 
         std::vector<rtp_transceiver_interface> trs;
         trs.push_back(conn.add_transceiver(
@@ -379,9 +377,7 @@ static task<nlohmann::json> test_case_5_multi_transceiver(net::io_context &ctx,
                 throw std::runtime_error(
                     "on_track msids should have one unique msid");
         }
-        auto answer = co_await conn.create_answer();
-        co_await conn.set_local_description(
-            parse_sdp(answer.to_string(), "answer"));
+        co_await conn.set_local_description(co_await conn.create_answer());
 
         co_await wait_until_ice_gather(conn, timer);
         co_await ws_send(ws, {{"type", "answer"},

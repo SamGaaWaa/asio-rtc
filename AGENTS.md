@@ -7,6 +7,8 @@
 ```
 
 Hardcodes personal paths (`Boost_DIR`, `STDEXEC_DIR`). Edit before first build. Also requires OpenSSL 3.
+Uses `libc++` (`-stdlib=libc++`) and `mold` linker (`-fuse-ld=mold`).
+`ASIORTC_ENABLE_FFMPEG` is OFF by default; enabling it requires a full FFmpeg build with all transitive dependencies (opus, vpx, srt, etc.) — the pre-built static libs in `third_party/ffmpeg/lib/` may not link if system deps are missing.
 
 Manual CMake:
 ```bash
@@ -69,7 +71,7 @@ When adding SRTP functionality:
 
 - C++23, coroutines (`-fcoroutines`), P2300 senders/receivers (stdexec)
 - 4-space indent, 80-col suggested
-- `.clang-format` in submodules; no root-level `.clang-format` — don't create one unless asked
+- `.clang-format` at repo root (LLVM-based, 80-col, 4-space indent, PointerAlignment: Right)
 - No comments unless asked
 - **Member naming**: `_prefix` for private members (`_send_session`, `_profile`, `_init_guard`)
 - **Type naming**: `snake_case` (e.g., `srtp_transport_base`, `remote_sdp`, `attr_type_t`)
@@ -157,8 +159,8 @@ struct rtcp_packet {
 
 ### Adding new source / test files
 Update `CMakeLists.txt`:
-- Source files: add to `file(GLOB RTC_SRC_FILES ...)` at line 31
-- Test files: add to `file(GLOB ASIORTC_TEST_SOURCES ...)` at line 74
+- Source files: add to `file(GLOB RTC_SRC_FILES ...)`
+- Test files: add to `file(GLOB ASIORTC_TEST_SOURCES ...)`
 
 ## Available utilities (from asio-ice)
 

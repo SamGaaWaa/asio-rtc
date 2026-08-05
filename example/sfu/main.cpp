@@ -72,7 +72,7 @@ static task<void> sfw_session(net::io_context &ctx, ws_ptr ws) {
 
     std::cout << "Waiting for browser offer...\n";
     auto msg = co_await ws_recv(*ws);
-    auto offer = parse_sdp(msg["sdp"].get<std::string>(), "offer");
+    auto offer = parse_sdp(msg["sdp"].get<std::string>(), "offer").value();
     std::cout << "Offer: medias=" << offer.medias.size() << '\n';
 
     auto tr = conn.add_transceiver(
@@ -91,9 +91,10 @@ static task<void> sfw_session(net::io_context &ctx, ws_ptr ws) {
               << " sender_ssrc=" << tr.sender().ssrc(0)
               << " num_streams=" << tr.sender().num_streams() << '\n';
 
-    auto answer = co_await conn.create_answer();
-    co_await conn.set_local_description(
-        parse_sdp(answer.to_string(), "answer"));
+    {
+        auto answer = co_await conn.create_answer();
+        co_await conn.set_local_description(std::move(answer));
+    }
 
     std::cout << "After set_local: direction="
               << (tr.direction() == sdp_direction::sendrecv   ? "sendrecv"

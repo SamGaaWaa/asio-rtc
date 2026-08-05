@@ -4,6 +4,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <optional>
 
 namespace asiortc {
 
@@ -69,6 +70,13 @@ struct sdp_media {
     std::vector<std::pair<std::string, std::string>> attributes;
 };
 
+struct sdp_group {
+    std::string semantic;
+    std::vector<std::string> items;
+
+    void to_string(std::string &dst) const;
+};
+
 struct session_description {
     std::string type;
     uint8_t version = 0;
@@ -96,7 +104,7 @@ struct session_description {
     std::string msid_semantic;
     std::vector<std::string> msid_tokens;
 
-    std::vector<std::vector<std::string>> bundle_groups;
+    std::vector<sdp_group> groups;
 
     std::string ice_ufrag;
     std::string ice_pwd;
@@ -112,7 +120,7 @@ struct session_description {
     std::string to_string() const;
 };
 
-session_description parse_sdp(std::string_view sdp_text,
-                              std::string type = "offer");
+std::optional<session_description> parse_sdp(std::string_view sdp_text,
+                                             std::string type = "offer");
 
 } // namespace asiortc

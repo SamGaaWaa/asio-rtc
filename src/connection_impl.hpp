@@ -294,6 +294,10 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
     std::unordered_map<uint32_t, std::chrono::steady_clock::time_point>
         _last_pli_time;
 
+    // jsep
+    std::size_t _session_version{0};
+    std::uint16_t _mid_counter{0};
+
     std::optional<session_description> _local_desc{};
     std::optional<session_description> _remote_desc{};
     std::optional<session_description> _pending_local_desc{};

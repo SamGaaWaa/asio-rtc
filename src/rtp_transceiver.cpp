@@ -81,6 +81,13 @@ sdp_media rtp_transceiver::to_offer_sdp_media(std::string mid) const {
     sdp_media m;
     m.mid = mid;
     m.media_type = infer_media_type(_codecs);
+    if (stopped()) {
+        m.port = 0;
+        m.proto = "UDP/TLS/RTP/SAVPF";
+        m.direction = _direction;
+        m.rtcp_mux = true;
+        return m;
+    }
     m.port = 9;
     m.proto = "UDP/TLS/RTP/SAVPF";
     m.conn_nettype = "IN";
@@ -118,11 +125,21 @@ sdp_media rtp_transceiver::to_offer_sdp_media(std::string mid) const {
                 m.rtcp_fbs.push_back({c.payload_type, "goog-remb", ""});
             }
         }
-        apply_simulcast_to(m);
+        // apply_simulcast_to(m);
     } else if (media == "audio") {
         m.extmaps = {{1, "urn:ietf:params:rtp-hdrext:sdes:mid"},
                      {4, "http://www.ietf.org/id/"
                          "draft-holmer-rmcat-transport-wide-cc-extensions-01"}};
+    }
+
+    if (!stopped() && (_direction == sdp_direction::sendrecv ||
+                       _direction == sdp_direction::sendonly)) {
+        std::vector<std::string> rids;
+        for (const auto &p : _sender->parameters().encodings) {
+            if (!p.rid.empty())
+                rids.push_back(p.rid);
+        }
+        m.rids = std::move(rids);
     }
 
     return m;

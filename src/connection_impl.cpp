@@ -12,6 +12,8 @@
 #include <mutex>
 
 #include <boost/container/static_vector.hpp>
+#include <boost/container/flat_set.hpp>
+#include <boost/container/flat_map.hpp>
 
 #include "asioice/agent_config.hpp"
 #include "asioice/candidate.hpp"
@@ -735,17 +737,32 @@ connection_impl::set_local_description(session_description desc) {
         break;
     }
     bool is_offer = (desc.type == "offer");
-    _local_desc = std::move(desc);
     if (is_offer) {
-        auto t_it = _transceivers.begin();
-        for (const auto &media : _local_desc->medias) {
-            if (t_it == _transceivers.end())
-                break;
-            (*t_it)->set_mid(media.mid);
-            ++t_it;
+        for (const auto &tr : _transceivers) {
+            auto mline_index = tr->mline_index();
+            if (!mline_index.has_value())
+                continue;
+            if (desc.medias.size() <= *mline_index) {
+                auto msg = std::format("Invalid mline {}\n", *mline_index);
+                SAMLOG_ERROR(auto sink) { sink(msg); };
+                throw std::runtime_error{msg};
+            }
+            const auto &m = desc.medias[*mline_index];
+            if (!tr->mid().empty() && tr->mid() != m.mid) {
+                auto msg =
+                    std::format("MID mismatch {} != {}\n", tr->mid(), m.mid);
+                SAMLOG_ERROR(auto sink) { sink(msg); };
+                throw std::runtime_error{msg};
+            }
         }
+        for (auto &tr : _transceivers) {
+            if (tr->mline_index() && tr->mid().empty())
+                tr->set_mid(desc.medias[*tr->mline_index()].mid);
+        }
+        _local_desc = std::move(desc);
         _signaling_state = signaling_state_t::have_local_offer;
     } else {
+        _local_desc = std::move(desc);
         _signaling_state = signaling_state_t::have_local_pranswer;
     }
     _agent.config().ice_controlling = is_offer;
@@ -777,24 +794,19 @@ connection_impl::set_remote_description(session_description desc) {
         break;
     }
     bool is_offer = (desc.type == "offer");
-    _remote_desc = std::move(desc);
     if (is_offer) {
-        if (_remote_desc->bundle_groups.size() > 1)
-            throw std::logic_error{
-                "max-compat bundle policy not supported: "
-                "multiple BUNDLE groups would require multiple transports"};
-        if (!_remote_desc->bundle_groups.empty()) {
-            const auto &bundled = _remote_desc->bundle_groups[0];
-            for (const auto &rm : _remote_desc->medias)
-                if (rm.media_type != "application" &&
-                    std::find(bundled.begin(), bundled.end(), rm.mid) ==
-                        bundled.end())
-                    throw std::logic_error{
-                        "balanced/max-compat bundle policy not supported: "
-                        "media section mid=" +
-                        rm.mid + " not in BUNDLE group"};
-        }
-        for (const auto &rm : _remote_desc->medias) {
+        auto bundle = std::ranges::find_if(
+            desc.groups, [](const auto &g) { return g.semantic == "BUNDLE"; });
+        if (bundle == desc.groups.end())
+            throw std::logic_error{"bundle policy not supported: "};
+        for (const auto &rm : desc.medias)
+            if (rm.media_type == "application" &&
+                std::ranges::find(bundle->items, rm.mid) == bundle->items.end())
+                throw std::logic_error{
+                    "balanced/max-compat bundle policy not supported: "
+                    "media section mid=" +
+                    rm.mid + " not in BUNDLE group"};
+        for (const auto &rm : desc.medias) {
             if (rm.media_type == "application")
                 continue;
             media_kind rm_kind = media_kind::video;
@@ -903,14 +915,14 @@ connection_impl::set_remote_description(session_description desc) {
         }
         std::erase_if(_transceivers,
                       [](const auto &tr) { return tr->mid().empty(); });
+        _remote_desc = std::move(desc);
         _signaling_state = signaling_state_t::have_remote_offer;
     } else {
         for (auto &tr : _transceivers) {
-            auto it =
-                std::ranges::find_if(_remote_desc->medias, [&](const auto &rm) {
-                    return rm.mid == tr->mid();
-                });
-            if (it == _remote_desc->medias.end() || it->rtpmaps.empty()) {
+            auto it = std::ranges::find_if(desc.medias, [&](const auto &rm) {
+                return rm.mid == tr->mid();
+            });
+            if (it == desc.medias.end() || it->rtpmaps.empty()) {
                 tr->set_direction(sdp_direction::inactive);
                 tr->stop();
                 continue;
@@ -954,6 +966,7 @@ connection_impl::set_remote_description(session_description desc) {
                 }
             }
         }
+        _remote_desc = std::move(desc);
         _signaling_state = signaling_state_t::have_remote_pranswer;
     }
     _agent.config().ice_controlling = !is_offer;
@@ -978,63 +991,232 @@ void connection_impl::register_decoder(std::string name,
 }
 
 asiortc::task<session_description> connection_impl::create_offer() {
-    auto fp = _cert.get_fingerprint(asioice::ssl::hash_algorithm::sha256);
+    struct media_entry {
+        const rtp_transceiver *tr = nullptr; // 描述 sctp 时为空
+        std::size_t index;                   // 在 SDP 中的 m-line 索引
+        std::string mid;                     // 分配的 MID
+        bool is_sctp = false;
+    };
 
+    std::vector<media_entry> media_entries;
+
+    const session_description *current_desc =
+        _local_desc ? &*_local_desc : (const session_description *)nullptr;
+
+    boost::container::flat_map<std::string, std::size_t> mid_to_index;
+    boost::container::flat_set<std::size_t> recyclable_indices;
+    std::optional<std::size_t> sctp_index;
+
+    if (current_desc) {
+        for (std::size_t i = 0; i < current_desc->medias.size(); ++i) {
+            const auto &m = current_desc->medias[i];
+            if (m.mid.empty())
+                continue;
+
+            mid_to_index[m.mid] = i;
+
+            if (m.proto.find("SCTP") != std::string::npos) {
+                sctp_index = i;
+                continue;
+            }
+
+            if (m.port == 0) {
+                recyclable_indices.insert(i);
+            }
+        }
+    }
+
+    // 处理现有的 transceivers
+    media_entries.reserve(_transceivers.size());
+    for (const auto &tr : _transceivers) {
+        if (tr->mid().empty())
+            continue; // 稍后处理新的
+
+        auto it = mid_to_index.find(tr->mid());
+        if (it != mid_to_index.end()) {
+            std::size_t index = it->second;
+            if (index == sctp_index) {
+                // SDP 声明是 data channel，实际不是
+                continue;
+            }
+            media_entries.push_back({tr.get(), index, tr->mid()});
+
+            recyclable_indices.erase(index);
+            mid_to_index.erase(it);
+        } else {
+            // TODO:
+        }
+    }
+
+    // 下一个追加位置的起点
+    std::size_t next_append_index =
+        current_desc ? current_desc->medias.size() : 0;
+
+    // 获取一个可用的索引
+    const auto get_index = [&]() -> std::size_t {
+        if (!recyclable_indices.empty()) {
+            auto idx = *recyclable_indices.begin();
+            recyclable_indices.erase(recyclable_indices.begin());
+            mid_to_index.erase(current_desc->medias[idx].mid);
+            return idx;
+        }
+        return next_append_index++;
+    };
+
+    // 处理 SCTP
+    const bool sctp_active = _need_sctp;
+    if (sctp_index.has_value()) {
+        // 已存在 SCTP 行
+        const std::string &old_mid = current_desc->medias[*sctp_index].mid;
+        media_entries.push_back({nullptr, *sctp_index, old_mid, true});
+    } else if (sctp_active) {
+        media_entries.push_back({nullptr, get_index(), "", true});
+    }
+
+    // 处理新的 RTP Transceivers
+    for (const auto &tr : _transceivers) {
+        if (!tr->mid().empty())
+            continue; // 已处理
+        if (tr->stopped())
+            continue; // 新的但已停止
+        media_entries.push_back({tr.get(), get_index(), ""});
+    }
+
+    // 填补 index 空隙
+    for (const auto &[mid, idx] : mid_to_index)
+        media_entries.push_back({nullptr, idx, mid});
+
+    std::ranges::sort(media_entries, [](const auto &a, const auto &b) {
+        return a.index < b.index;
+    });
+
+    auto fp = _cert.get_fingerprint(asioice::ssl::hash_algorithm::sha256);
     session_description offer;
     offer.type = "offer";
-    offer.version = 0;
-    offer.origin.username = "-";
-    offer.origin.session_id = 0;
-    offer.origin.session_version = 0;
-    offer.origin.nettype = "IN";
-    offer.origin.addrtype = "IP4";
-    offer.origin.addr = "0.0.0.0";
-    offer.session_name = "-";
-    offer.timing.start = 0;
-    offer.timing.stop = 0;
+
+    offer.origin.session_version = _session_version++;
+    if (current_desc) {
+        offer.session_name = current_desc->session_name;
+        offer.timing = current_desc->timing;
+        offer.origin = current_desc->origin;
+    } else {
+        offer.version = 0;
+        offer.origin.username = "-";
+        offer.origin.session_id = 0;
+        offer.origin.nettype = "IN";
+        offer.origin.addrtype = "IP4";
+        offer.origin.addr = "0.0.0.0";
+        offer.session_name = "-";
+        offer.timing.start = 0;
+        offer.timing.stop = 0;
+    }
+
     offer.ice_ufrag = _agent.local_username();
     offer.ice_pwd = _agent.local_password();
     offer.fingerprint = fp.hash_name() + " " + fp.value;
     offer.setup = "actpass";
 
-    int mid_counter = 0;
-
-    if (_need_sctp) {
-        sdp_media app;
-        app.mid = std::to_string(mid_counter);
-        app.media_type = "application";
-        app.port = 9;
-        app.proto = "UDP/DTLS/SCTP";
-        app.conn_nettype = "IN";
-        app.conn_addrtype = "IP4";
-        app.conn_addr = "0.0.0.0";
-        app.direction = sdp_direction::sendrecv;
-        app.sctpmap = "webrtc-datachannel";
-        app.sctp_port = 5000;
-        offer.medias.push_back(std::move(app));
-        ++mid_counter;
+    boost::container::flat_set<std::string> used_mids;
+    for (const auto &entry : media_entries) {
+        if (!entry.mid.empty())
+            used_mids.insert(entry.mid);
     }
 
-    for (auto &t : _transceivers) {
-        const auto &sender = t->sender();
-        if (!sender || !sender->track())
-            continue;
-        auto media = t->to_offer_sdp_media(std::to_string(mid_counter));
-        media.ice_ufrag = offer.ice_ufrag;
-        media.ice_pwd = offer.ice_pwd;
-        media.fingerprint = offer.fingerprint;
-        media.setup = offer.setup;
-        offer.medias.push_back(std::move(media));
-        ++mid_counter;
+    const auto next_mid = [&used_mids, this]() {
+        while (true) {
+            auto mid = std::to_string(_mid_counter);
+            ++_mid_counter;
+            if (used_mids.find(mid) == used_mids.end()) {
+                used_mids.insert(mid);
+                return mid;
+            }
+        }
+    };
+
+    for (auto &entry : media_entries) {
+        if (entry.mid.empty())
+            entry.mid = next_mid();
+    }
+
+    {
+        // 构建 sync group
+        boost::container::flat_map<std::string, std::vector<std::string>>
+            sync_group;
+        for (const auto &entry : media_entries) {
+            if (entry.tr == nullptr)
+                continue;
+            for (const auto &msid : entry.tr->sender()->msids()) {
+                auto it = sync_group.lower_bound(msid);
+                if (it == sync_group.end() || it->first != msid) {
+                    sync_group.emplace_hint(
+                        it, msid, std::vector<std::string>{entry.mid});
+                } else {
+                    it->second.push_back(entry.mid);
+                }
+            }
+        }
+
+        for (auto &g : sync_group) {
+            if (g.second.size() > 1)
+                offer.groups.emplace_back("LS", std::move(g.second));
+        }
+    }
+
+    for (const auto &entry : media_entries) {
+        const auto &mid = entry.mid;
+
+        if (entry.is_sctp) {
+            sdp_media app;
+            app.mid = mid;
+            app.media_type = "application";
+            app.port = sctp_active ? 9 : 0;
+            app.proto = "UDP/DTLS/SCTP";
+            app.conn_nettype = "IN";
+            app.conn_addrtype = "IP4";
+            app.conn_addr = "0.0.0.0";
+            app.direction = sdp_direction::sendrecv;
+            // app.sctpmap = "webrtc-datachannel";
+            app.sctp_port = 5000;
+            app.fmts.push_back("webrtc-datachannel");
+
+            app.ice_ufrag = offer.ice_ufrag;
+            app.ice_pwd = offer.ice_pwd;
+            app.fingerprint = offer.fingerprint;
+            app.setup = offer.setup;
+
+            offer.medias.push_back(std::move(app));
+        } else {
+            auto t = entry.tr;
+            if (t == nullptr) {
+                sdp_media m;
+                m.port = 0;
+                m.proto = "UDP/TLS/RTP/SAVPF";
+                m.direction = sdp_direction::inactive;
+                m.rtcp_mux = true;
+                offer.medias.push_back(std::move(m));
+                continue;
+            }
+            auto media = t->to_offer_sdp_media(mid);
+
+            media.ice_ufrag = offer.ice_ufrag;
+            media.ice_pwd = offer.ice_pwd;
+            media.fingerprint = offer.fingerprint;
+            media.setup = offer.setup;
+            offer.medias.push_back(std::move(media));
+            t->set_mline_index(offer.medias.size() - 1);
+        }
     }
 
     std::vector<std::string> mids;
-    for (int i = 0; i < mid_counter; ++i)
-        mids.push_back(std::to_string(i));
-    if (!mids.empty())
-        offer.bundle_groups.push_back(std::move(mids));
+    mids.reserve(offer.medias.size());
+    for (const auto &media : offer.medias)
+        if (media.port != 0)
+            mids.push_back(media.mid);
 
-    if (_transceivers.size() > 0) {
+    if (!mids.empty())
+        offer.groups.emplace_back("BUNDLE", std::move(mids));
+
+    if (!offer.medias.empty()) {
         offer.msid_semantic = "WMS";
         offer.msid_tokens = {"*"};
     }
@@ -1114,7 +1296,7 @@ asiortc::task<session_description> connection_impl::create_answer() {
     for (const auto &m : answer.medias)
         answer_bundle.push_back(m.mid);
     if (!answer_bundle.empty())
-        answer.bundle_groups.push_back(std::move(answer_bundle));
+        answer.groups.emplace_back("BUNDLE", std::move(answer_bundle));
 
     if (ice_options_trickle_from(*_remote_desc))
         answer.attributes.emplace_back("ice-options", "trickle");

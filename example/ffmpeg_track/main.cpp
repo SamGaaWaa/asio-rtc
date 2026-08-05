@@ -652,13 +652,14 @@ static task<void> ffmpeg_session(net::io_context &ctx, ws_ptr ws) {
 
     std::cout << "Waiting for browser offer...\n";
     auto msg = co_await ws_recv(*ws);
-    auto offer = parse_sdp(msg["sdp"].get<std::string>(), "offer");
+    auto offer = parse_sdp(msg["sdp"].get<std::string>(), "offer").value();
     std::cout << "Offer: medias=" << offer.medias.size() << '\n';
     co_await conn.set_remote_description(std::move(offer));
 
-    auto answer = co_await conn.create_answer();
-    co_await conn.set_local_description(
-        parse_sdp(answer.to_string(), "answer"));
+    {
+        auto answer = co_await conn.create_answer();
+        co_await conn.set_local_description(std::move(answer));
+    }
 
     {
         for (int i = 0; i < 20 && conn.ice_gathering_state() !=

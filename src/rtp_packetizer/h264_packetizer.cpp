@@ -1,18 +1,12 @@
-#include "codecs/default_h264.hpp"
+#include "rtp_packetizer/h264_packetizer.hpp"
 
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
 
-namespace asiortc::codecs {
+namespace asiortc::rtp_packetizer {
 
 static constexpr int kPacketMax = 1200;
-
-std::pair<std::vector<std::vector<uint8_t>>, uint32_t>
-DefaultH264Encoder::encode(const media_frame &, bool) {
-    throw std::runtime_error{
-        "H264 encode not supported: use pre-encoded data via pack()"};
-}
 
 static const uint8_t *find_start_code(const uint8_t *data, size_t len,
                                       size_t &code_len) {
@@ -32,7 +26,7 @@ static const uint8_t *find_start_code(const uint8_t *data, size_t len,
 }
 
 std::pair<std::vector<std::vector<uint8_t>>, uint32_t>
-DefaultH264Encoder::pack(const std::vector<uint8_t> &data, uint32_t timestamp) {
+H264Packetizer::pack(const std::vector<uint8_t> &data, uint32_t timestamp) {
     std::vector<std::vector<uint8_t>> payloads;
     size_t off = 0;
 
@@ -97,4 +91,4 @@ DefaultH264Encoder::pack(const std::vector<uint8_t> &data, uint32_t timestamp) {
     return {payloads, timestamp};
 }
 
-} // namespace asiortc::codecs
+} // namespace asiortc::rtp_packetizer

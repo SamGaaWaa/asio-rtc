@@ -22,7 +22,6 @@ namespace websocket = beast::websocket;
 
 #include "json.hpp"
 
-#include "ffmpeg/codecs/opus.hpp"
 #include "ffmpeg/codecs/vpx.hpp"
 #include "ffmpeg/codecs/h264.hpp"
 #include "ffmpeg/codecs/vp9.hpp"
@@ -599,47 +598,6 @@ static task<void> ffmpeg_session(net::io_context &ctx, ws_ptr ws) {
         configuration{.ice_servers{.urls = {"stun:14.29.112.241:20002",
                                             "stun:stun.l.google.com:19302"}}});
 
-    conn.register_encoder("opus", [](const codecs::encoder_params &p) {
-        return ffmpeg::make_opus_encoder(p);
-    });
-
-    conn.register_decoder("VP8", [] { return ffmpeg::make_vp8_decoder(); });
-    conn.register_decoder("H264", [] { return ffmpeg::make_h264_decoder(); });
-    conn.register_decoder("VP9", [] { return ffmpeg::make_vp9_decoder(); });
-    conn.register_decoder("opus", [] { return ffmpeg::make_opus_decoder(); });
-
-    auto recorder = std::make_shared<ffmpeg_recorder>("recv.webm", 1280, 720,
-                                                      30, 1, 48000, 2);
-
-    conn.on_track([recorder, &ctx,
-                   &scope](rtp_receiver_interface receiver,
-                           std::shared_ptr<media_track> track,
-                           std::vector<std::string> msids,
-                           rtp_transceiver_interface transceiver) {
-        std::cout << "New track: kind="
-                  << (track->kind() == media_kind::audio ? "audio" : "video")
-                  << " id=" << track->id() << " mid=" << transceiver.mid()
-                  << '\n';
-        scope.spawn(stdexec::starts_on(
-            utils::scheduler{ctx}, [](auto r, auto t, auto rec) -> task<void> {
-                while (true) {
-                    auto frame = co_await t->recv();
-                    if (!frame)
-                        break;
-                    auto d = r.decoder();
-                    if (d) {
-                        auto decoded = d->decode(frame->data, frame->timestamp);
-                        for (auto &mf : decoded) {
-                            if (mf.kind == media_kind::video)
-                                rec->write_video(mf);
-                            else
-                                rec->write_audio(mf);
-                        }
-                    }
-                }
-            }(receiver, track, recorder)));
-    });
-
     auto tracks = ffmpeg_track::open(s_test_file, ctx);
     if (tracks.empty()) {
         std::cerr << "ffmpeg_track failed to open file\n";
@@ -701,7 +659,6 @@ static task<void> ffmpeg_session(net::io_context &ctx, ws_ptr ws) {
     scope.request_stop();
     co_await (scope.on_empty() | stdexec::continues_on(sched));
     std::cout << "Done\n";
-    recorder->close();
 }
 
 static task<void> http_session(net::io_context &ctx,

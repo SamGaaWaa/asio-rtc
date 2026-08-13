@@ -49,9 +49,8 @@ const std::string &rtp_receiver_interface::mid() const noexcept {
     return _impl->mid();
 }
 
-const std::shared_ptr<media_track> &
-rtp_receiver_interface::track() const noexcept {
-    return _impl->track();
+std::shared_ptr<media_track> rtp_receiver_interface::track() const noexcept {
+    return std::static_pointer_cast<media_track>(_impl->track());
 }
 
 bool rtp_receiver_interface::stopped() const noexcept {
@@ -65,13 +64,7 @@ rtp_receiver_interface::parameters() const noexcept {
     return _impl->parameters();
 }
 
-const std::shared_ptr<codecs::decoder> &
-rtp_receiver_interface::decoder() const noexcept {
-    return _impl->decoder();
-}
-
-void rtp_receiver_interface::on_rtp(
-    std::function<bool(rtp::rtp_packet &)> cb) {
+void rtp_receiver_interface::on_rtp(std::function<bool(rtp::rtp_packet &)> cb) {
     _impl->_on_rtp_cb = std::move(cb);
 }
 
@@ -107,9 +100,8 @@ rtp_receiver_interface rtp_transceiver_interface::receiver() const noexcept {
     return ri;
 }
 
-const std::vector<sdp_codec> &
-rtp_transceiver_interface::codecs() const noexcept {
-    return _impl->codecs();
+uint8_t rtp_transceiver_interface::payload_type() const noexcept {
+    return _impl->payload_type();
 }
 
 rtp_transceiver_interface rtp_sender_interface::transceiver() const noexcept {

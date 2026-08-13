@@ -23,10 +23,16 @@ struct rtp_rtcp_parameters {
 };
 
 struct rtp_send_parameters {
-    std::optional<std::string> transaction_id;
+    std::string transaction_id;
     std::vector<rtp_encoding_parameters> encodings;
     std::vector<sdp_extmap> header_extensions;
     rtp_rtcp_parameters rtcp;
+};
+
+struct rtp_receive_decoding_parameters {
+    std::string name;
+    uint32_t clock_rate = 0;
+    std::optional<std::uint8_t> channels;
 };
 
 struct rtp_receive_parameters {
@@ -38,6 +44,7 @@ struct rtp_transceiver_init {
     sdp_direction direction = sdp_direction::sendrecv;
     std::vector<rtp_encoding_parameters> send_encodings;
     std::vector<std::string> streams;
+    std::vector<rtp_receive_decoding_parameters> recv_decodings;
 };
 
 } // namespace asiortc

@@ -33,7 +33,6 @@ namespace net = boost::asio;
 #include "asiortc/session_description.hpp"
 #include "asiortc/task.hpp"
 #include "asiortc/detail/packet_stream.hpp"
-#include "asiortc/codecs/base.hpp"
 #include "asiortc/datachannel.hpp"
 #include "asioice/detail/asio2exec.hpp"
 #include "samlog.hpp"
@@ -106,11 +105,11 @@ struct peer_connection {
 
     void set_logger(std::shared_ptr<logger_interface> logger);
 
-    asiortc::task<session_description> create_offer();
-    asiortc::task<session_description> create_answer();
-    asiortc::task<void> set_local_description(session_description desc);
-    asiortc::task<void> set_remote_description(session_description desc);
-    const session_description *local_description() const noexcept;
+    asiortc::task<std::unique_ptr<session_description_interface>> create_offer();
+    asiortc::task<std::unique_ptr<session_description_interface>> create_answer();
+    asiortc::task<void> set_local_description(std::unique_ptr<session_description_interface> desc);
+    asiortc::task<void> set_remote_description(std::unique_ptr<session_description_interface> desc);
+    const session_description_interface *local_description() const noexcept;
 
     bool can_trickle_ice_candidates() const noexcept;
     asiortc::task<void> add_ice_candidate(candidate c);
@@ -127,10 +126,12 @@ struct peer_connection {
 
     signaling_state_t signaling_state() const noexcept;
 
-    rtp_transceiver_interface add_transceiver(media_kind kind,
-                                              rtp_transceiver_init init = {});
     rtp_transceiver_interface
     add_transceiver(std::shared_ptr<media_track> track,
+                    rtp_transceiver_init init = {});
+
+    rtp_transceiver_interface
+    add_transceiver(const media_description &desc,
                     rtp_transceiver_init init = {});
 
     rtp_sender_interface add_track(std::shared_ptr<media_track> track,
@@ -195,14 +196,6 @@ struct peer_connection {
     using on_candidates_cb =
         std::function<void(std::vector<asiortc::candidate>)>;
     void on_candidates(on_candidates_cb cb);
-
-    void register_encoder(std::string name,
-                          std::function<std::shared_ptr<codecs::encoder>(
-                              const codecs::encoder_params &)>
-                              factory);
-    void
-    register_decoder(std::string name,
-                     std::function<std::shared_ptr<codecs::decoder>()> factory);
 
     rtc_stats_report get_stats() const;
     void close() noexcept;

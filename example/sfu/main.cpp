@@ -1,4 +1,5 @@
 #include "asiortc.hpp"
+#include "asiortc/queue_track.hpp"
 #include "asioice/detail/async_queue.hpp"
 #include "asiortc/rtp.hpp"
 
@@ -72,12 +73,19 @@ static task<void> sfw_session(net::io_context &ctx, ws_ptr ws) {
 
     std::cout << "Waiting for browser offer...\n";
     auto msg = co_await ws_recv(*ws);
-    auto offer = parse_sdp(msg["sdp"].get<std::string>(), "offer").value();
-    std::cout << "Offer: medias=" << offer.medias.size() << '\n';
+    std::cout << "\n=== OFFER SDP ===\n"
+              << msg["sdp"].get<std::string>() << "=== END OFFER ===\n\n";
+    auto offer = parse_sdp(msg["sdp"].get<std::string>(), "offer");
+    if (!offer) {
+        std::cerr << "parse sdp failed:" << msg["sdp"].get<std::string>()
+                  << '\n';
+        co_return;
+    }
 
-    auto tr = conn.add_transceiver(
-        media_kind::video,
-        {.direction = sdp_direction::sendrecv, .streams = {"sfu-loopback"}});
+    auto track = std::make_shared<queue_track>(
+        media_description::make_default(media_format::h264));
+    auto tr = conn.add_transceiver(track, {.direction = sdp_direction::sendrecv,
+                                           .streams = {"sfu-loopback"}});
     std::cout << "Created video sendrecv mid=" << tr.mid() << '\n';
 
     co_await conn.set_remote_description(std::move(offer));
@@ -87,7 +95,7 @@ static task<void> sfw_session(net::io_context &ctx, ws_ptr ws) {
                   : tr.direction() == sdp_direction::sendonly ? "sendonly"
                   : tr.direction() == sdp_direction::recvonly ? "recvonly"
                                                               : "inactive")
-              << " mid=" << tr.mid() << " codecs=" << tr.codecs().size()
+              << " mid=" << tr.mid() << " codecs=" << 1
               << " sender_ssrc=" << tr.sender().ssrc(0)
               << " num_streams=" << tr.sender().num_streams() << '\n';
 
@@ -218,7 +226,7 @@ static task<void> listener(net::io_context &ctx) {
 int main() {
     std::cout << std::unitbuf;
     net::io_context ctx;
-    asiortc::set_logger(std::make_shared<logger_interface>(),
+    asiortc::set_logger(std::make_shared<logger_interface>(log_level::trace),
                         ctx.get_executor());
     exec::start_detached(
         stdexec::starts_on(utils::scheduler{ctx}, listener(ctx)));

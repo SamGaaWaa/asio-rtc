@@ -8,7 +8,7 @@
 namespace asiortc {
 
 struct rtc_rtp_capabilities {
-    std::vector<sdp_codec> codecs;
+    std::vector<sdp_rtpmap> codecs;
     std::vector<sdp_extmap> header_extensions;
 };
 

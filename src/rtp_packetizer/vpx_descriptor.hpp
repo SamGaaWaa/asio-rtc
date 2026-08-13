@@ -4,7 +4,7 @@
 #include <optional>
 #include <vector>
 
-namespace asiortc::codecs {
+namespace asiortc::rtp_packetizer {
 
 struct vpx_payload_descriptor {
     bool partition_start = false;
@@ -20,4 +20,4 @@ struct vpx_payload_descriptor {
     std::vector<uint8_t> bytes() const;
 };
 
-} // namespace asiortc::codecs
+} // namespace asiortc::rtp_packetizer

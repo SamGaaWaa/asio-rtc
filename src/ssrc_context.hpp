@@ -25,6 +25,8 @@ struct ssrc_context
     uint32_t ssrc() const noexcept { return _ssrc; }
     auto &receiver() noexcept { return _receiver; }
     const auto &receiver() const noexcept { return _receiver; }
+    const auto &nack_gen() const noexcept { return _nack_gen; }
+    auto &nack_gen() noexcept { return _nack_gen; }
 
     // --- Stream tracking ---
 
@@ -113,9 +115,6 @@ struct ssrc_context
         return _lsr_time;
     }
 
-    // --- NACK ---
-    nack_generator _nack_gen;
-
     // --- Reset on reuse (create_ssrc_context) ---
     void reset_stats() noexcept {
         _max_seq = 0;
@@ -132,7 +131,7 @@ struct ssrc_context
         _lsr = 0;
         _consecutive_lost = 0;
         _lsr_time = {};
-        new (&_nack_gen) nack_generator{1024, 10, 100, 10};
+        _nack_gen = nack_generator{1024, 10, 100, 10};
     }
 
     struct ssrc_key {
@@ -159,6 +158,7 @@ struct ssrc_context
     uint64_t _lsr = 0;
     int _consecutive_lost = 0;
     std::chrono::steady_clock::time_point _lsr_time{};
+    nack_generator _nack_gen;
 };
 
 using ssrc_context_set = boost::intrusive::set<

@@ -33,6 +33,8 @@ namespace net = asio;
 }
 #endif
 
+#include <boost/unordered/unordered_flat_map.hpp>
+
 #include <array>
 #include <boost/compat/move_only_function.hpp>
 #include <chrono>
@@ -65,13 +67,6 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
         std::shared_ptr<rtp_receiver> receiver,
         std::shared_ptr<media_track> track, std::vector<std::string> msids,
         std::shared_ptr<rtp_transceiver> transceiver)>;
-
-    using encoder_factory = std::function<std::shared_ptr<codecs::encoder>(
-        const codecs::encoder_params &)>;
-    using codec_registry = std::unordered_map<std::string, encoder_factory>;
-
-    using decoder_factory = std::function<std::shared_ptr<codecs::decoder>()>;
-    using decoder_registry = std::unordered_map<std::string, decoder_factory>;
 
     connection_impl(executor_type ex, asiortc::configuration cfg = {});
 
@@ -147,19 +142,21 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
         return nullptr;
     }
 
-    asiortc::task<session_description> create_offer();
-    asiortc::task<session_description> create_answer();
+    asiortc::task<std::unique_ptr<session_description_interface>>
+    create_offer();
+    asiortc::task<std::unique_ptr<session_description_interface>>
+    create_answer();
 
     std::shared_ptr<asiortc::data_channel>
     create_data_channel(std::string label,
                         asiortc::data_channel::options options = {});
 
     std::shared_ptr<rtp_transceiver>
-    add_transceiver(media_kind kind, rtp_transceiver_init init = {});
-
-    std::shared_ptr<rtp_transceiver>
     add_transceiver(std::shared_ptr<media_track>,
                     rtp_transceiver_init init = {});
+
+    std::shared_ptr<rtp_transceiver>
+    add_transceiver(media_description desc, rtp_transceiver_init init = {});
 
     std::shared_ptr<rtp_sender> add_track(std::shared_ptr<media_track> track,
                                           std::vector<std::string> streams);
@@ -167,8 +164,10 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
     const auto &transceivers() const noexcept { return _transceivers; }
     auto &transceivers() noexcept { return _transceivers; }
 
-    asiortc::task<void> set_local_description(session_description desc);
-    asiortc::task<void> set_remote_description(session_description desc);
+    asiortc::task<void>
+    set_local_description(std::unique_ptr<session_description> desc);
+    asiortc::task<void>
+    set_remote_description(std::unique_ptr<session_description> desc);
 
     auto add_ice_candidate(asioice::candidate c) {
         return _agent.add_remote_candidate(std::move(c));
@@ -178,9 +177,6 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
         _on_candidates = std::move(cb);
     }
     void on_track(on_track_cb cb);
-
-    void register_encoder(std::string name, encoder_factory factory);
-    void register_decoder(std::string name, decoder_factory factory);
 
     rtc_stats_report get_stats() const;
 
@@ -225,8 +221,6 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
                         std::shared_ptr<srtp_transport_type> srtp);
     asiortc::task<void> _nack_loop();
 
-    void _register_default_codecs();
-
     asiortc::task<void> ice_send_loop();
     bool sync_send_rtp(std::span<const uint8_t> data) noexcept;
     bool sync_send_rtcp(std::span<const uint8_t> data) noexcept;
@@ -234,6 +228,14 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
     asiortc::task<void> periodic_cleaning_loop();
 
     bool dispatch_rtp(rtp::rtp_packet &pkt) noexcept;
+    std::pair<std::vector<uint8_t>, uint16_t>
+    make_rtp(rtp_sender &sender, rtp_stream &stream,
+             const std::vector<uint8_t> &payload, uint32_t timestamp,
+             uint16_t sequence_number, bool marker);
+    void update_send_stats(rtp_stream &stream,
+                           const std::vector<uint8_t> &payload,
+                           std::size_t rtp_buf_size, uint16_t twcc_seq,
+                           uint32_t timestamp);
 
     executor_type _executor;
     stdexec::counting_scope _scope{};
@@ -255,21 +257,16 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
     ssrc_context_set _ssrc_set{};
     std::vector<std::shared_ptr<rtp_transceiver>> _transceivers{};
 
-    std::unordered_map<uint8_t, sdp_codec> _pt_codec_map{};
+    std::optional<uint16_t> _mid_ext_id{};
 
-    struct _pt_recv_entry {
-        std::shared_ptr<rtp_receiver> receiver;
-        std::shared_ptr<media_track_impl> track;
-        std::string codec_name;
-    };
-    std::unordered_map<uint8_t, _pt_recv_entry> _pt_receiver_map{};
-    std::unordered_map<std::string, std::shared_ptr<media_track_impl>>
-        _mid_track_map{};
+    // router
+    boost::unordered::unordered_flat_map<std::uint8_t, std::uint8_t>
+        _rtx_pt_to_pt;
+    boost::unordered::unordered_flat_map<std::uint32_t, std::uint32_t>
+        _rtx_ssrc_to_ssrc;
 
-    int _mid_ext_id = 0;
-
-    void _rebuild_pt_maps();
-    const sdp_codec *_find_codec(uint8_t pt) const;
+    void rewrite_rtx_packet(rtp::rtp_packet &pkt) const noexcept;
+    void build_ssrc_map(rtp_transceiver &tr, const sdp_media &remote);
 
     std::string _transport_stats_id{};
     uint64_t _tx_packets = 0, _tx_bytes = 0;
@@ -298,10 +295,10 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
     std::size_t _session_version{0};
     std::uint16_t _mid_counter{0};
 
-    std::optional<session_description> _local_desc{};
-    std::optional<session_description> _remote_desc{};
-    std::optional<session_description> _pending_local_desc{};
-    std::optional<session_description> _pending_remote_desc{};
+    std::unique_ptr<session_description> _local_desc{};
+    std::unique_ptr<session_description> _remote_desc{};
+    std::unique_ptr<session_description> _pending_local_desc{};
+    std::unique_ptr<session_description> _pending_remote_desc{};
     asioice::utils::property<ice_gathering_state_t> _gathering_state{
         ice_gathering_state_t::init};
     std::optional<any_sender<void>> _gathering_task{};
@@ -313,8 +310,6 @@ struct connection_impl : std::enable_shared_from_this<connection_impl> {
 
     on_data_channel_cb _on_remote_channel_cb;
     on_track_cb _on_track_cb;
-    codec_registry _codec_registry;
-    decoder_registry _decoder_registry;
     bool _need_sctp{false};
 
     srtp_transport_base::on_new_ssrc_callback_type _on_new_ssrc_cb{};

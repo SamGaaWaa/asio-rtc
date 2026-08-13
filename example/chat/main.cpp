@@ -178,7 +178,7 @@ static task<void> chat_session(net::io_context &ctx) try {
 
     std::string remote_type = is_offer ? "answer" : "offer";
     co_await conn.set_remote_description(
-        parse_sdp(remote_sdp_str, remote_type).value());
+        parse_sdp(remote_sdp_str, remote_type));
 
     if (!is_offer) {
         auto answer = co_await conn.create_answer();

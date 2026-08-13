@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace asiortc::codecs {
+namespace asiortc::rtp_packetizer {
 
 vpx_payload_descriptor vpx_payload_descriptor::parse(const uint8_t *data,
                                                      size_t len,
@@ -101,4 +101,4 @@ std::vector<uint8_t> vpx_payload_descriptor::bytes() const {
     return data;
 }
 
-} // namespace asiortc::codecs
+} // namespace asiortc::rtp_packetizer

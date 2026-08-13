@@ -6,7 +6,6 @@
 #include <string>
 #include <vector>
 
-#include "asiortc/codecs/base.hpp"
 #include "asiortc/media_track.hpp"
 #include "asiortc/rtp.hpp"
 #include "asiortc/rtp_parameters.hpp"
@@ -46,12 +45,11 @@ struct rtp_receiver;
 
 struct rtp_receiver_interface {
     const std::string &mid() const noexcept;
-    const std::shared_ptr<media_track> &track() const noexcept;
+    std::shared_ptr<media_track> track() const noexcept;
     bool stopped() const noexcept;
     void stop();
     rtp_transceiver_interface transceiver() const noexcept;
     const rtp_receive_parameters &parameters() const noexcept;
-    const std::shared_ptr<codecs::decoder> &decoder() const noexcept;
     void on_rtp(std::function<bool(rtp::rtp_packet &)> cb);
     operator bool() const noexcept { return _impl != nullptr; }
 
@@ -74,7 +72,7 @@ struct rtp_transceiver_interface {
     void stop();
     rtp_sender_interface sender() const noexcept;
     rtp_receiver_interface receiver() const noexcept;
-    const std::vector<sdp_codec> &codecs() const noexcept;
+    uint8_t payload_type() const noexcept;
     operator bool() const noexcept { return _impl != nullptr; }
 
   private:

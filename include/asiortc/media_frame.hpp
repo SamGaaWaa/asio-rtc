@@ -10,23 +10,13 @@ namespace asiortc {
 
 enum class media_kind : uint8_t { audio = 0, video = 1 };
 
-enum class media_format : uint16_t {
-    unknown = 0,
-    yuv420p = 1,
-    nv12 = 2,
-    bgra = 3,
-    pcm_s16le = 100,
-    pcm_f32le = 101,
+enum class media_format : int {
+    unknown = -1,
     opus = 200,
     vp8 = 201,
     h264 = 202,
-    vp9 = 203,
+    vp9 = 203
 };
-
-inline bool is_encoded_format(media_format fmt) noexcept {
-    using enum media_format;
-    return fmt == opus || fmt == vp8 || fmt == h264 || fmt == vp9;
-}
 
 struct media_frame {
     media_kind kind{}; // audio / video

@@ -12,6 +12,7 @@ nack_generator::nack_generator(uint16_t history_size, uint8_t max_retries,
 void nack_generator::receive_packet(uint16_t seq) {
     if (!_initialized) {
         _highest_seq = seq;
+        _lowest_seq = seq;
         _initialized = true;
         _buffer[get_index(seq)].received = true;
         return;
@@ -34,6 +35,7 @@ void nack_generator::receive_packet(uint16_t seq) {
     if (diff >= _history_size) {
         // 清空整个缓冲区状态
         std::fill(_buffer.begin(), _buffer.end(), nack_info{});
+        _lowest_seq = seq - static_cast<uint16_t>(_history_size - 1);
     } else {
         // 清理刚刚滑出窗口的包状态（可选：为了严格，清理 [highest_seq + 1, seq
         // - 1] 之外的旧数据） 实际上环形缓冲区覆盖写入时自然清理，但 nack_info
@@ -49,6 +51,10 @@ void nack_generator::receive_packet(uint16_t seq) {
 
     // 更新最高序列号
     _highest_seq = seq;
+
+    // 窗口滑动：只保留最近 _history_size 个序号，避免 NACK 到窗口外的旧包
+    if (seq_distance(_lowest_seq, _highest_seq) >= _history_size)
+        _lowest_seq = _highest_seq - static_cast<uint16_t>(_history_size - 1);
 }
 
 void nack_generator::get_nacks(int64_t now_ms,
@@ -61,10 +67,15 @@ void nack_generator::get_nacks(int64_t now_ms,
     // 退避时间计算：通常为 1 * RTT，为了防止网络抖动可加个常数偏移
     int64_t backoff_ms = _rtt_ms + 20;
 
-    // 从最新的包开始遍历到最旧的包
-    // 最旧的包是 _highest_seq - _history_size + 1
-    for (uint16_t i = 1; i < _history_size; ++i) {
-        uint16_t seq = _highest_seq - i; // 自动处理回绕
+    // 只扫描有效窗口 [lowest_seq, highest_seq) 内的序号，而不是整个环形缓冲区
+    int32_t span = seq_distance(_lowest_seq, _highest_seq);
+    if (span < 0)
+        span += 0x10000;
+    if (span > _history_size)
+        span = _history_size;
+
+    for (int32_t i = 1; i < span; ++i) {
+        uint16_t seq = _highest_seq - static_cast<uint16_t>(i); // 自动处理回绕
         size_t idx = get_index(seq);
         nack_info &info = _buffer[idx];
 

@@ -58,6 +58,10 @@ add_subdirectory(third_party/libsrtp)
     src/codecs/default_h264.cpp
     src/codecs/default_opus.cpp
     src/codecs/vpx_descriptor.cpp
+    src/rtp_packetizer/vpx_packetizer.cpp
+    src/rtp_packetizer/h264_packetizer.cpp
+    src/rtp_packetizer/opus_packetizer.cpp
+    src/rtp_packetizer/vpx_descriptor.cpp
     src/nack_generator.cpp
     src/uuid.cpp
     src/any_stream_track.cpp
@@ -145,3 +149,6 @@ if(ASIORTC_ENABLE_FFMPEG)
 endif()
 add_subdirectory(example/sfu)
 add_subdirectory(example/test)
+add_subdirectory(example/ffmpeg_exe)
+add_subdirectory(example/file_frame)
+add_subdirectory(example/recorder)

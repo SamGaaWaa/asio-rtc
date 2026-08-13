@@ -1,29 +1,23 @@
-#include "codecs/default_vpx.hpp"
+#include "rtp_packetizer/vpx_packetizer.hpp"
 
-#include "codecs/vpx_descriptor.hpp"
+#include "rtp_packetizer/vpx_descriptor.hpp"
 
 #include <algorithm>
 #include <random>
 #include <stdexcept>
 
-namespace asiortc::codecs {
+namespace asiortc::rtp_packetizer {
 
 static constexpr int kPacketMax = 1200;
 
-DefaultVp8Encoder::DefaultVp8Encoder(const encoder_params &p) {
+Vp8Packetizer::Vp8Packetizer() {
     static thread_local std::random_device rd;
     std::mt19937 gen(rd());
     _picture_id = gen() & 0x7FFF;
 }
 
 std::pair<std::vector<std::vector<uint8_t>>, uint32_t>
-DefaultVp8Encoder::encode(const media_frame &, bool) {
-    throw std::runtime_error{
-        "VP8 encode not supported: use pre-encoded data via pack()"};
-}
-
-std::pair<std::vector<std::vector<uint8_t>>, uint32_t>
-DefaultVp8Encoder::pack(const std::vector<uint8_t> &data, uint32_t timestamp) {
+Vp8Packetizer::pack(const std::vector<uint8_t> &data, uint32_t timestamp) {
     vpx_payload_descriptor desc;
     desc.partition_start = true;
     desc.partition_id = 0;
@@ -47,20 +41,14 @@ DefaultVp8Encoder::pack(const std::vector<uint8_t> &data, uint32_t timestamp) {
     return {payloads, timestamp};
 }
 
-DefaultVp9Encoder::DefaultVp9Encoder(const encoder_params &p) {
+Vp9Packetizer::Vp9Packetizer() {
     static thread_local std::random_device rd;
     std::mt19937 gen(rd());
     _picture_id = gen() & 0x7FFF;
 }
 
 std::pair<std::vector<std::vector<uint8_t>>, uint32_t>
-DefaultVp9Encoder::encode(const media_frame &, bool) {
-    throw std::runtime_error{
-        "VP9 encode not supported: use pre-encoded data via pack()"};
-}
-
-std::pair<std::vector<std::vector<uint8_t>>, uint32_t>
-DefaultVp9Encoder::pack(const std::vector<uint8_t> &data, uint32_t timestamp) {
+Vp9Packetizer::pack(const std::vector<uint8_t> &data, uint32_t timestamp) {
     vpx_payload_descriptor desc;
     desc.partition_start = true;
     desc.partition_id = 0;
@@ -84,4 +72,4 @@ DefaultVp9Encoder::pack(const std::vector<uint8_t> &data, uint32_t timestamp) {
     return {payloads, timestamp};
 }
 
-} // namespace asiortc::codecs
+} // namespace asiortc::rtp_packetizer

@@ -22,6 +22,7 @@ namespace net = boost::asio;
 #endif
 
 #include <memory>
+#include <span>
 #include <functional>
 #include <optional>
 
@@ -70,8 +71,8 @@ struct any_stream_track final : asiortc::media_track {
     ~any_stream_track();
 
     media_kind kind() const noexcept override;
-    media_format format() const noexcept override;
-    void set_format(media_format f) noexcept;
+    media_description description() const noexcept override;
+    void set_description(const media_description &desc) noexcept;
     const std::string &id() const noexcept override;
     track_state ready_state() const noexcept override;
 
@@ -80,7 +81,8 @@ struct any_stream_track final : asiortc::media_track {
         return ready_state() == track_state::ended;
     }
 
-    asiortc::task<std::optional<media_frame>> recv() override;
+    asiortc::task<std::vector<media_frame>>
+    recv(std::span<const encode_target> layers) override;
 
     std::size_t max_cache_size() const noexcept;
     void set_max_cache_size(std::size_t) noexcept;

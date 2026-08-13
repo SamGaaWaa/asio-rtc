@@ -47,13 +47,15 @@ class nack_generator {
     inline size_t get_index(uint16_t seq) const { return seq % _history_size; }
 
   private:
-    const uint16_t _history_size;
-    const uint8_t _max_retries;
+    uint16_t _history_size;
+    uint8_t _max_retries;
     int64_t _rtt_ms;
-    const int64_t _nack_delay_ms;
+    int64_t _nack_delay_ms;
 
     bool _initialized = false;
     uint16_t _highest_seq = 0; // 目前收到的最大序列号
+    uint16_t _lowest_seq =
+        0; // 窗口内最低的有效序列号（避免 NACK 流开始前的序号）
 
     // 环形缓冲区，记录每个包的状态
     std::vector<nack_info> _buffer;

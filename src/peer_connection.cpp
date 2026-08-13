@@ -45,27 +45,29 @@ void peer_connection::set_logger(std::shared_ptr<logger_interface> logger) {
     ::asiortc::set_logger(std::move(logger), get_executor());
 }
 
-task<session_description> peer_connection::create_offer() {
+task<std::unique_ptr<session_description_interface>> peer_connection::create_offer() {
     throw_if_nullptr(_impl, "create_offer");
     return _impl->create_offer();
 }
 
-task<session_description> peer_connection::create_answer() {
+task<std::unique_ptr<session_description_interface>> peer_connection::create_answer() {
     throw_if_nullptr(_impl, "create_answer");
     return _impl->create_answer();
 }
 
-task<void> peer_connection::set_local_description(session_description desc) {
+task<void> peer_connection::set_local_description(std::unique_ptr<session_description_interface> desc) {
     throw_if_nullptr(_impl, "set_local_description");
-    return _impl->set_local_description(std::move(desc));
+    throw_if_nullptr(desc, "set_local_description: desc == nullptr");
+    return _impl->set_local_description(std::unique_ptr<session_description>(static_cast<session_description*>(desc.release())));
 }
 
-task<void> peer_connection::set_remote_description(session_description desc) {
+task<void> peer_connection::set_remote_description(std::unique_ptr<session_description_interface> desc) {
     throw_if_nullptr(_impl, "set_remote_description");
-    return _impl->set_remote_description(std::move(desc));
+    throw_if_nullptr(desc, "set_remote_description: desc == nullptr");
+    return _impl->set_remote_description(std::unique_ptr<session_description>(static_cast<session_description*>(desc.release())));
 }
 
-const session_description *peer_connection::local_description() const noexcept {
+const session_description_interface *peer_connection::local_description() const noexcept {
     throw_if_nullptr(_impl, "local_description");
     return _impl->local_description();
 }
@@ -139,19 +141,20 @@ signaling_state_t peer_connection::signaling_state() const noexcept {
 }
 
 rtp_transceiver_interface
-peer_connection::add_transceiver(media_kind kind, rtp_transceiver_init init) {
+peer_connection::add_transceiver(std::shared_ptr<media_track> track,
+                                 rtp_transceiver_init init) {
     throw_if_nullptr(_impl, "add_transceiver");
-    auto tr = _impl->add_transceiver(kind, std::move(init));
+    auto tr = _impl->add_transceiver(std::move(track), std::move(init));
     rtp_transceiver_interface iface;
     iface._impl = std::move(tr);
     return iface;
 }
 
 rtp_transceiver_interface
-peer_connection::add_transceiver(std::shared_ptr<media_track> track,
+peer_connection::add_transceiver(const media_description &desc,
                                  rtp_transceiver_init init) {
     throw_if_nullptr(_impl, "add_transceiver");
-    auto tr = _impl->add_transceiver(std::move(track), std::move(init));
+    auto tr = _impl->add_transceiver(desc, std::move(init));
     rtp_transceiver_interface iface;
     iface._impl = std::move(tr);
     return iface;
@@ -244,21 +247,6 @@ void peer_connection::on_data_channel(on_data_channel_cb cb) {
         iface._impl = std::move(dc);
         cb(std::move(iface));
     });
-}
-
-void peer_connection::register_encoder(
-    std::string name, std::function<std::shared_ptr<codecs::encoder>(
-                          const codecs::encoder_params &)>
-                          factory) {
-    throw_if_nullptr(_impl, "register_encoder");
-    _impl->register_encoder(std::move(name), std::move(factory));
-}
-
-void peer_connection::register_decoder(
-    std::string name,
-    std::function<std::shared_ptr<codecs::decoder>()> factory) {
-    throw_if_nullptr(_impl, "register_decoder");
-    _impl->register_decoder(std::move(name), std::move(factory));
 }
 
 rtc_stats_report peer_connection::get_stats() const {

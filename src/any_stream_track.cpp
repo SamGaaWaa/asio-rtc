@@ -16,7 +16,7 @@ struct any_stream_track::impl_t {
            split_callback_t split_cb, media_kind kind, media_format format)
         : _pipe{std::move(any_pipe)}, _read_func{std::move(read_func)},
           _split_cb{std::move(split_cb)}, _id{utils::uuid()}, _kind{kind},
-          _format{format} {
+          _desc{format} {
         if (_split_cb == nullptr)
             throw std::invalid_argument{"_split_cb == nullptr"};
     }
@@ -30,15 +30,17 @@ struct any_stream_track::impl_t {
 
     media_kind kind() const noexcept { return _kind; }
 
-    media_format format() const noexcept { return _format; }
+    media_description description() const noexcept { return _desc; }
 
-    void set_format(media_format f) noexcept { _format = f; }
+    void set_description(const media_description &desc) noexcept {
+        _desc = desc;
+    }
 
     track_state state() const noexcept { return _state; }
 
     void stop() noexcept { _state = track_state::ended; }
 
-    asiortc::task<std::optional<media_frame>> read_frame();
+    asiortc::task<std::vector<media_frame>> read_frame();
 
     std::size_t max_cache_size() const noexcept { return _max_cache_size; }
     void set_max_cache_size(std::size_t n) noexcept { _max_cache_size = n; }
@@ -56,20 +58,19 @@ struct any_stream_track::impl_t {
     std::size_t _max_cache_size{128 * 1024};
     std::deque<media_frame> _q{};
 
-    //
     std::string _id;
     media_kind _kind;
-    media_format _format;
+    media_description _desc;
     track_state _state = track_state::live;
 };
 
 any_stream_track::any_stream_track(std::shared_ptr<void> any_pipe,
-                                   any_stream_track::read_func_t read_func,
-                                   any_stream_track::split_callback_t split_cb,
-                                   media_kind kind, media_format format)
+                                    any_stream_track::read_func_t read_func,
+                                    any_stream_track::split_callback_t split_cb,
+                                    media_kind kind, media_format format)
     : _impl{new any_stream_track::impl_t(std::move(any_pipe),
-                                         std::move(read_func),
-                                         std::move(split_cb), kind, format)} {}
+                                          std::move(read_func),
+                                          std::move(split_cb), kind, format)} {}
 
 any_stream_track::~any_stream_track() { delete _impl; }
 
@@ -78,14 +79,15 @@ media_kind any_stream_track::kind() const noexcept {
     return _impl->kind();
 }
 
-media_format any_stream_track::format() const noexcept {
+media_description any_stream_track::description() const noexcept {
     assert(_impl);
-    return _impl->format();
+    return _impl->description();
 }
 
-void any_stream_track::set_format(media_format f) noexcept {
+void any_stream_track::set_description(
+    const media_description &desc) noexcept {
     assert(_impl);
-    _impl->set_format(f);
+    _impl->set_description(desc);
 }
 
 const std::string &any_stream_track::id() const noexcept {
@@ -113,19 +115,22 @@ void any_stream_track::set_max_cache_size(std::size_t n) noexcept {
     _impl->set_max_cache_size(n);
 }
 
-asiortc::task<std::optional<media_frame>> any_stream_track::recv() {
+asiortc::task<std::vector<media_frame>>
+any_stream_track::recv(std::span<const encode_target> layers) {
     assert(_impl);
     return _impl->read_frame();
 }
 
-asiortc::task<std::optional<media_frame>>
+asiortc::task<std::vector<media_frame>>
 any_stream_track::impl_t::read_frame() {
     if (_state == track_state::ended)
-        co_return {};
+        co_return std::vector<media_frame>{};
     if (!_q.empty()) {
         auto f = std::move(_q.front());
         _q.pop_front();
-        co_return f;
+        std::vector<media_frame> result;
+        result.push_back(std::move(f));
+        co_return result;
     }
     auto lk = co_await _mtx.lock();
     while (true) {
@@ -138,7 +143,7 @@ any_stream_track::impl_t::read_frame() {
                      ec.message());
             };
             _state = track_state::ended;
-            co_return {};
+            co_return std::vector<media_frame>{};
         }
         if (n == 0) {
             SAMLOG_WARN(auto sink) {
@@ -146,7 +151,7 @@ any_stream_track::impl_t::read_frame() {
                      "file end\n");
             };
             _state = track_state::ended;
-            co_return {};
+            co_return std::vector<media_frame>{};
         }
         std::size_t total = 0;
         while (true) {
@@ -166,7 +171,9 @@ any_stream_track::impl_t::read_frame() {
         if (!_q.empty()) {
             auto f = std::move(_q.front());
             _q.pop_front();
-            co_return f;
+            std::vector<media_frame> result;
+            result.push_back(std::move(f));
+            co_return result;
         }
     }
     std::unreachable();

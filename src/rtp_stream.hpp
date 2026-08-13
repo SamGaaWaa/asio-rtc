@@ -1,5 +1,7 @@
 #pragma once
 
+#include "asiortc/media_frame.hpp"
+
 #include <array>
 #include <cstdint>
 #include <optional>
@@ -8,6 +10,13 @@
 namespace asiortc {
 
 struct rtp_stream {
+    rtp_stream() = default;
+
+    rtp_stream(const rtp_stream&) = delete;
+    rtp_stream& operator=(const rtp_stream&) = delete;
+    rtp_stream(rtp_stream&&) = delete;
+    rtp_stream& operator=(rtp_stream&&) = delete;
+
     uint32_t ssrc = 0;
     uint32_t rtx_ssrc = 0;
     uint8_t rtx_pt = 97;

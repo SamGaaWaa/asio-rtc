@@ -24,10 +24,7 @@
 
 #define REPORT_ERROR(LL)                                                       \
     [](std::string_view line) -> std::optional<session_description> {          \
-        SAMLOG_WARN(auto sink) {                                               \
-            char buf[256];                                                     \
-            sink({buf, sizeof(buf)}, "parse \"{}\" failed\n", (line));         \
-        };                                                                     \
+        SAMLOG_WARN(auto sink) { sink("parse \"{}\" failed\n", (line)); };     \
         return {};                                                             \
     }(LL)
 

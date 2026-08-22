@@ -65,12 +65,12 @@ struct any_stream_track::impl_t {
 };
 
 any_stream_track::any_stream_track(std::shared_ptr<void> any_pipe,
-                                    any_stream_track::read_func_t read_func,
-                                    any_stream_track::split_callback_t split_cb,
-                                    media_kind kind, media_format format)
+                                   any_stream_track::read_func_t read_func,
+                                   any_stream_track::split_callback_t split_cb,
+                                   media_kind kind, media_format format)
     : _impl{new any_stream_track::impl_t(std::move(any_pipe),
-                                          std::move(read_func),
-                                          std::move(split_cb), kind, format)} {}
+                                         std::move(read_func),
+                                         std::move(split_cb), kind, format)} {}
 
 any_stream_track::~any_stream_track() { delete _impl; }
 
@@ -84,8 +84,7 @@ media_description any_stream_track::description() const noexcept {
     return _impl->description();
 }
 
-void any_stream_track::set_description(
-    const media_description &desc) noexcept {
+void any_stream_track::set_description(const media_description &desc) noexcept {
     assert(_impl);
     _impl->set_description(desc);
 }
@@ -121,8 +120,7 @@ any_stream_track::recv(std::span<const encode_target> layers) {
     return _impl->read_frame();
 }
 
-asiortc::task<std::vector<media_frame>>
-any_stream_track::impl_t::read_frame() {
+asiortc::task<std::vector<media_frame>> any_stream_track::impl_t::read_frame() {
     if (_state == track_state::ended)
         co_return std::vector<media_frame>{};
     if (!_q.empty()) {
@@ -137,9 +135,7 @@ any_stream_track::impl_t::read_frame() {
         auto [ec, n] = co_await this->read_some();
         if (ec) {
             SAMLOG_WARN(auto sink) {
-                char buf[256];
-                sink({buf, sizeof(buf)},
-                     "any_stream_track::impl_t::read_frame failed: {}\n",
+                sink("any_stream_track::impl_t::read_frame failed: {}\n",
                      ec.message());
             };
             _state = track_state::ended;

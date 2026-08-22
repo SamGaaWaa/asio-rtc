@@ -604,9 +604,7 @@ asiortc::task<void> connection_impl::do_connect() {
     auto hs_ec = co_await _dtls_transport->async_handshake(dtls_role);
     if (hs_ec) {
         SAMLOG_INFO(auto sink) {
-            char buf[256];
-            sink({buf, sizeof(buf)}, "DTLS handshake failed: {}\n",
-                 hs_ec.message());
+            sink("DTLS handshake failed: {}\n", hs_ec.message());
         };
         co_return;
     }

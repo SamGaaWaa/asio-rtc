@@ -16,8 +16,7 @@ namespace asiortc {
 static void srtp_log_func(srtp_log_level_t level, const char *msg,
                           void *data) noexcept {
     SAMLOG_INFO(auto sink) {
-        char buf[256];
-        sink({buf, sizeof(buf)}, "srtp_log_level_t {}: {}\n", (int)level, msg);
+        sink("srtp_log_level_t {}: {}\n", (int)level, msg);
     };
 }
 
@@ -217,9 +216,7 @@ srtp_transport_base::protect_rtp(std::span<const uint8_t> input,
                        input.size(), output.data(), &cap, 0);
     if (ret != srtp_err_status_ok) {
         SAMLOG_WARN(auto sink) {
-            char buf[256];
-            sink({buf, sizeof(buf)}, "srtp_protect failed: {}\n",
-                 status_to_string(ret));
+            sink("srtp_protect failed: {}\n", status_to_string(ret));
         };
         return {};
     }
@@ -235,9 +232,7 @@ srtp_transport_base::unprotect_rtp(std::span<const uint8_t> input,
                          input.size(), output.data(), &cap);
     if (ret != srtp_err_status_ok) {
         SAMLOG_WARN(auto sink) {
-            char buf[256];
-            sink({buf, sizeof(buf)}, "srtp_unprotect failed: {}\n",
-                 status_to_string(ret));
+            sink("srtp_unprotect failed: {}\n", status_to_string(ret));
         };
         return {};
     }
@@ -253,9 +248,7 @@ srtp_transport_base::protect_rtcp(std::span<const uint8_t> input,
                             input.size(), output.data(), &cap, 0);
     if (ret != srtp_err_status_ok) {
         SAMLOG_WARN(auto sink) {
-            char buf[256];
-            sink({buf, sizeof(buf)}, "srtp_protect_rtcp failed: {}\n",
-                 status_to_string(ret));
+            sink("srtp_protect_rtcp failed: {}\n", status_to_string(ret));
         };
         return {};
     }
@@ -271,9 +264,7 @@ srtp_transport_base::unprotect_rtcp(std::span<const uint8_t> input,
                               input.data(), input.size(), output.data(), &cap);
     if (ret != srtp_err_status_ok) {
         SAMLOG_INFO(auto sink) {
-            char buf[256];
-            sink({buf, sizeof(buf)}, "srtp_unprotect_rtcp failed: {}\n",
-                 status_to_string(ret));
+            sink("srtp_unprotect_rtcp failed: {}\n", status_to_string(ret));
         };
         return {};
     }

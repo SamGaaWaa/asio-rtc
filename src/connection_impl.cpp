@@ -1847,10 +1847,7 @@ void connection_impl::do_on_rtp_rtcp_packet(asioice::io_buffer_ptr buf) {
                 }
             } else if (cp.type == rtcp::packet_type::RTPFB &&
                        cp.report_count == rtcp::packet_type::RTPFB_TCC) {
-                auto fb = rtcp::parse_transport_cc(cp.payload.data(),
-                                                   cp.payload.size());
-                // Store for future GCC consumption
-                (void)fb;
+                // TODO:
             }
         }
     }
@@ -1922,7 +1919,11 @@ bool connection_impl::dispatch_rtp(rtp::rtp_packet &pkt) noexcept {
                 auto pli =
                     rtcp::rtcp_psfb{rtcp::packet_type::PSFB_PLI, 0, pkt.ssrc}
                         .bytes();
-                this->sync_send_rtcp(pli);
+                bool sent = this->sync_send_rtcp(pli);
+                SAMLOG_TRACE(auto sink) {
+                    sink("sent pli rtcp feedback {}, {} bytes\n",
+                         sent ? "success" : "failed", pli.size());
+                };
                 ctx.reset_consecutive_lost();
             }
         } else {

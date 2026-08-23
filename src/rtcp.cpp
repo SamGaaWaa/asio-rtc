@@ -454,24 +454,6 @@ std::vector<uint16_t> parse_nack(const uint8_t *data, size_t len) {
     return lost;
 }
 
-std::optional<transport_cc_feedback> parse_transport_cc(const uint8_t *data,
-                                                        size_t len) {
-    if (len < 8)
-        return std::nullopt;
-    transport_cc_feedback fb;
-    fb.base_seq = asioice::binary::ntoh<uint16_t>(
-        *reinterpret_cast<const uint16_t *>(data));
-    fb.status_count = asioice::binary::ntoh<uint16_t>(
-        *reinterpret_cast<const uint16_t *>(data + 2));
-    fb.reference_time = (static_cast<uint32_t>(data[4]) << 16) |
-                        (static_cast<uint32_t>(data[5]) << 8) |
-                        static_cast<uint32_t>(data[6]);
-    fb.feedback_packet_count = data[7];
-    if (len > 8)
-        fb.packet_chunks.assign(data + 8, data + len);
-    return fb;
-}
-
 std::vector<uint8_t> build_transport_cc(const transport_cc_feedback &fb) {
     size_t fci_size = 8 + fb.packet_chunks.size();
     std::vector<uint8_t> fci(fci_size);
@@ -504,60 +486,6 @@ std::vector<uint8_t> build_transport_cc(const transport_cc_feedback &fb) {
     asioice::binary::write_big<uint16_t>(
         pkt.data() + 2, static_cast<uint16_t>(pkt.size() / 4 - 1));
     return pkt;
-}
-
-std::vector<tcc_packet_info>
-tcc_parse_packet_status(const transport_cc_feedback &fb) {
-    std::vector<tcc_packet_info> result;
-    result.reserve(fb.status_count);
-
-    size_t chunk_bytes = ((fb.status_count + 6) / 7) * 2;
-    if (chunk_bytes > fb.packet_chunks.size())
-        return result;
-
-    size_t delta_start = chunk_bytes;
-    size_t delta_off = 0;
-
-    size_t chunk_off = 0;
-    for (uint16_t i = 0; i < fb.status_count;) {
-        if (chunk_off + 2 > chunk_bytes)
-            break;
-        uint16_t chunk =
-            asioice::binary::ntoh<uint16_t>(*reinterpret_cast<const uint16_t *>(
-                fb.packet_chunks.data() + chunk_off));
-        chunk_off += 2;
-
-        int bits = 12;
-        for (int j = 0; j < 7 && i < fb.status_count; ++j, ++i) {
-            uint8_t sym = (chunk >> bits) & 3;
-            int16_t delta = 0;
-
-            if (sym == 1) {
-                if (delta_start + delta_off < fb.packet_chunks.size()) {
-                    delta = static_cast<int16_t>(
-                                fb.packet_chunks[delta_start + delta_off]) -
-                            128;
-                    delta_off++;
-                }
-            } else if (sym == 2) {
-                if (delta_start + delta_off + 1 < fb.packet_chunks.size()) {
-                    delta =
-                        static_cast<int16_t>(asioice::binary::ntoh<uint16_t>(
-                            *reinterpret_cast<const uint16_t *>(
-                                fb.packet_chunks.data() + delta_start +
-                                delta_off))) -
-                        32768;
-                    delta_off += 2;
-                }
-            }
-
-            result.push_back({sym == 0   ? tcc_packet_status::not_received
-                              : sym == 1 ? tcc_packet_status::small_delta
-                                         : tcc_packet_status::large_delta,
-                              delta});
-        }
-    }
-    return result;
 }
 
 std::vector<uint8_t>

@@ -8,19 +8,19 @@
 namespace asiortc::rtcp {
 
 struct packet_type {
-    static constexpr uint8_t SR   = 200;
-    static constexpr uint8_t RR   = 201;
+    static constexpr uint8_t SR = 200;
+    static constexpr uint8_t RR = 201;
     static constexpr uint8_t SDES = 202;
-    static constexpr uint8_t BYE  = 203;
-    static constexpr uint8_t APP  = 204;
+    static constexpr uint8_t BYE = 203;
+    static constexpr uint8_t APP = 204;
     static constexpr uint8_t RTPFB = 205;
-    static constexpr uint8_t PSFB  = 206;
+    static constexpr uint8_t PSFB = 206;
 
     static constexpr uint8_t RTPFB_NACK = 1;
-    static constexpr uint8_t RTPFB_TCC  = 15;
-    static constexpr uint8_t PSFB_PLI   = 1;
-    static constexpr uint8_t PSFB_FIR   = 4;
-    static constexpr uint8_t PSFB_APP   = 15;
+    static constexpr uint8_t RTPFB_TCC = 15;
+    static constexpr uint8_t PSFB_PLI = 1;
+    static constexpr uint8_t PSFB_FIR = 4;
+    static constexpr uint8_t PSFB_APP = 15;
 };
 
 struct report_block {
@@ -56,13 +56,12 @@ struct rtcp_packet {
     std::size_t serialized_size() const noexcept;
 
     static bool is_rtcp_packet(const void *data, std::size_t len) noexcept;
-    static uint8_t get_packet_type(const void *data,
-                                    std::size_t len) noexcept;
+    static uint8_t get_packet_type(const void *data, std::size_t len) noexcept;
 };
 
 // RTCP Feedback: NACK
 struct rtcp_rtpfb {
-    uint8_t fmt = 1;  // NACK
+    uint8_t fmt = 1; // NACK
     uint32_t sender_ssrc = 0;
     uint32_t media_ssrc = 0;
     std::vector<uint16_t> lost;
@@ -72,7 +71,7 @@ struct rtcp_rtpfb {
 
 // RTCP Feedback: PLI / FIR / REMB
 struct rtcp_psfb {
-    uint8_t fmt = 1;  // PLI
+    uint8_t fmt = 1; // PLI
     uint32_t sender_ssrc = 0;
     uint32_t media_ssrc = 0;
     std::vector<uint8_t> fci;
@@ -80,12 +79,8 @@ struct rtcp_psfb {
     std::vector<uint8_t> bytes() const;
 };
 
-// REMB FCI
-std::pair<uint32_t, std::vector<uint32_t>>
-parse_remb(const uint8_t *data, size_t len);
-
 std::vector<uint8_t> pack_remb(uint32_t bitrate,
-                                const std::vector<uint32_t> &ssrcs);
+                               const std::vector<uint32_t> &ssrcs);
 
 // SDES
 struct sdes_chunk {
@@ -110,11 +105,7 @@ struct transport_cc_feedback {
     std::vector<uint8_t> packet_chunks;
 };
 
-std::optional<transport_cc_feedback>
-parse_transport_cc(const uint8_t *data, size_t len);
-
-std::vector<uint8_t>
-build_transport_cc(const transport_cc_feedback &fb);
+std::vector<uint8_t> build_transport_cc(const transport_cc_feedback &fb);
 
 enum class tcc_packet_status : uint8_t {
     not_received = 0,
@@ -127,9 +118,6 @@ struct tcc_packet_info {
     tcc_packet_status status;
     int16_t delta = 0;
 };
-
-std::vector<tcc_packet_info>
-tcc_parse_packet_status(const transport_cc_feedback &fb);
 
 std::vector<uint8_t>
 tcc_build_packet_status(const std::vector<tcc_packet_info> &packets);

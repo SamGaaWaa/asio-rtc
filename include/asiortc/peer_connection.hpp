@@ -11,19 +11,18 @@
 #include "asiortc/config.hpp"
 
 #if ASIORTC_USE_STANDALONE_ASIO
-#define ASIOICE_USE_BOOST_ASIO 0
 #include <asio/any_io_executor.hpp>
 namespace asiortc {
 namespace net = asio;
 }
 #else
-#define ASIOICE_USE_BOOST_ASIO 1
 #include <boost/asio/any_io_executor.hpp>
 namespace asiortc {
 namespace net = boost::asio;
 }
 #endif
 
+#include "asiortc/detail/use_sender.hpp"
 #include "asiortc/candidate.hpp"
 #include "asiortc/configuration.hpp"
 #include "asiortc/media_track.hpp"
@@ -34,7 +33,6 @@ namespace net = boost::asio;
 #include "asiortc/task.hpp"
 #include "asiortc/detail/packet_stream.hpp"
 #include "asiortc/datachannel.hpp"
-#include "asioice/detail/asio2exec.hpp"
 #include "samlog.hpp"
 
 namespace asiortc {
@@ -42,11 +40,6 @@ namespace asiortc {
 using namespace samlog;
 void set_logger(std::shared_ptr<logger_interface> logger,
                 net::any_io_executor ex);
-
-namespace utils {
-using asioice::utils::scheduler;
-using asioice::utils::use_sender;
-} // namespace utils
 
 enum struct ice_connection_state_t : char {
     init,
@@ -105,10 +98,14 @@ struct peer_connection {
 
     void set_logger(std::shared_ptr<logger_interface> logger);
 
-    asiortc::task<std::unique_ptr<session_description_interface>> create_offer();
-    asiortc::task<std::unique_ptr<session_description_interface>> create_answer();
-    asiortc::task<void> set_local_description(std::unique_ptr<session_description_interface> desc);
-    asiortc::task<void> set_remote_description(std::unique_ptr<session_description_interface> desc);
+    asiortc::task<std::unique_ptr<session_description_interface>>
+    create_offer();
+    asiortc::task<std::unique_ptr<session_description_interface>>
+    create_answer();
+    asiortc::task<void>
+    set_local_description(std::unique_ptr<session_description_interface> desc);
+    asiortc::task<void>
+    set_remote_description(std::unique_ptr<session_description_interface> desc);
     const session_description_interface *local_description() const noexcept;
 
     bool can_trickle_ice_candidates() const noexcept;
@@ -130,9 +127,8 @@ struct peer_connection {
     add_transceiver(std::shared_ptr<media_track> track,
                     rtp_transceiver_init init = {});
 
-    rtp_transceiver_interface
-    add_transceiver(const media_description &desc,
-                    rtp_transceiver_init init = {});
+    rtp_transceiver_interface add_transceiver(const media_description &desc,
+                                              rtp_transceiver_init init = {});
 
     rtp_sender_interface add_track(std::shared_ptr<media_track> track,
                                    std::vector<std::string> streams);

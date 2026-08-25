@@ -92,6 +92,7 @@ No external registration needed. Each `rtp_sender` holds a `unique_ptr<rtp_packe
 - `media_track_impl` is constructed from an `sdp_rtpmap` (not `media_kind`); `rtpmap()`/`description()` derive the format from the codec name.
 - **Codec names are lowercase** in `sdp_rtpmap::from_media_description()` (`"vp8"`, `"h264"`, `"opus"`) but mixed-case in parsed SDP (`"VP8"`, `"H264"`). Compare with `asioice::utils::nceq()`, never `==` — `depayload()` and `media_track_impl::description()` once used `==` and silently skipped VP8 descriptor stripping / reported `unknown` format.
 - **`media_track_impl` must init its jitter buffer with `is_video = !nceq(codec.name, "opus")`.** `jitter_buffer` defaults `is_video=false`, which makes `pop_frame()` emit a partial multi-packet frame the moment the buffer is exhausted instead of waiting — this split fragmented VP8 keyframes into corrupt frames (ffmpeg: "Invalid profile / Invalid sync code").
+- **`nack_generator::get_nacks()` must scan only the valid window `[lowest_seq, highest_seq)`** (tracked by `_lowest_seq`), never the whole ring buffer. The buffer is zero-initialized, so scanning all `_history_size` slots NACKs every never-received seq (including those before the stream's first packet) — producing ~1000 NACKs ("sent rtcp nack feedback: ... 952 items") on a loss-free local connection.
 
 ## Dependencies (git submodules)
 
@@ -117,7 +118,7 @@ When adding SRTP functionality:
   - DTLS client sends with `client_write_key` + `client_write_salt`, receives with `server_write_*`
   - DTLS server sends with `server_write_key` + `server_write_salt`, receives with `client_write_*`
 - **Separate `srtp_t` sessions**: one for send (`ssrc_any_outbound`), one for recv (`ssrc_any_inbound`). A single session handles both RTP and RTCP.
-- **Buffer sizing**: `max_protect_rtp_overhead()` returns `SRTP_MAX_TRAILER_LEN`, `max_protect_rtcp_overhead()` returns `SRTP_MAX_SRTCP_TRAILER_LEN` (libsrtp constants). The `send_rtp(Vec&)`/`send_rtcp(Vec&)` vector overloads auto-resize the buffer in-place; the span overloads require the caller to pre-size.
+- **Buffer sizing**: `max_protect_rtp_overhead()` returns `SRTP_MAX_TRAILER_LEN`, `max_protect_rtcp_overhead()` returns `SRTP_MAX_SRTCP_TRAILER_LEN` (libsrtp constants). The `send_rtp(Vec&)`/`send_rtcp(Vec&)` vector overloads auto-resize the buffer in-place; the span overloads require the caller to pre-size. **RTCP feedback can be larger than RTP** — `sync_send_rtcp()` allocates a heap buffer sized `data.size() + max_protect_rtcp_overhead()`; a fixed-size stack buffer makes large NACK feedback fail with "srtp_protect_rtcp failed: out buffer is too small".
 - **Sequence numbers must be monotonically increasing** per session; libsrtp rejects duplicate SNs with `replay_fail`.
 - **Profile mapping**: asio-ice's `srtp_protection_profile` enum → libsrtp `srtp_profile_t`. Only the 4 WebRTC profiles are supported (AES_CM_128_HMAC_SHA1_80/32, AEAD_AES_128/256_GCM).
 - Header forward-declares asio-ice types (`srtp_key_material`, `dtls_role`, `srtp_protection_profile`); full definitions included only in `.cpp`. `srtp.h` never appears in any header.

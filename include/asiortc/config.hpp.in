@@ -5,10 +5,12 @@
 #if ASIORTC_USE_STANDALONE_ASIO
     namespace asiortc {
         using error_code = std::error_code;
+        namespace errc = std::errc;
     }
 #else
     #include <boost/system/error_code.hpp>
     namespace asiortc {
         using error_code = boost::system::error_code;
+        namespace errc = boost::system::errc;
     }
 #endif

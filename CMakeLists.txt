@@ -129,6 +129,7 @@ if(ASIORTC_TEST)
         src/srtp_test.cpp
         src/rtp_rtcp_test.cpp
         src/sdp_test.cpp
+        src/async_wait_test.cpp
     )
     foreach(TEST_FILE ${ASIORTC_TEST_SOURCES})
         get_filename_component(EXECUTABLE_NAME ${TEST_FILE} NAME_WE)

@@ -29,6 +29,13 @@ struct media_description {
     std::string encoding_params;
     std::optional<std::uint8_t> channels;
 
+    friend bool operator==(const media_description &a,
+                           const media_description &b) noexcept {
+        return a.format == b.format && a.clock_rate == b.clock_rate &&
+               a.encoding_params == b.encoding_params &&
+               a.channels == b.channels;
+    }
+
     static constexpr media_description make_default(media_format format) {
         if (format == media_format::unknown)
             throw std::invalid_argument{"format == media_format::unknown"};

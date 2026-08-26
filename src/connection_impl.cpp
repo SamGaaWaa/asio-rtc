@@ -1276,9 +1276,18 @@ connection_impl::add_transceiver(std::shared_ptr<media_track> track,
 std::shared_ptr<rtp_sender>
 connection_impl::add_track(std::shared_ptr<media_track> track,
                            std::vector<std::string> streams) {
+    if (!track)
+        throw std::runtime_error{"track == nullptr"};
+    auto desc = track->description();
     auto it = std::ranges::find_if(_transceivers, [&](const auto &tr) {
-        return !tr->stopped() && tr->kind() == track->kind() &&
-               tr->sender()->track() == nullptr;
+        if (tr->stopped() || tr->sender()->track() != nullptr)
+            return false;
+        const auto &codec = tr->codec();
+        return asioice::utils::nceq(codec.name,
+                                    media_format_name(desc.format)) &&
+               codec.clock_rate == desc.clock_rate &&
+               codec.channels == desc.channels &&
+               codec.params_string() == desc.encoding_params;
     });
     if (it == _transceivers.end()) {
         return add_transceiver(std::move(track),

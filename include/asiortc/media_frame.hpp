@@ -18,6 +18,21 @@ enum class media_format : int {
     vp9 = 203
 };
 
+constexpr const char *media_format_name(media_format f) {
+    switch (f) {
+    case media_format::opus:
+        return "opus";
+    case media_format::vp8:
+        return "vp8";
+    case media_format::h264:
+        return "h264";
+    case media_format::vp9:
+        return "vp9";
+    default:
+        return "unknown";
+    }
+}
+
 struct media_frame {
     media_kind kind{}; // audio / video
     media_format format = media_format::unknown;

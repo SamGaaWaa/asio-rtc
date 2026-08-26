@@ -2,16 +2,20 @@
 
 #include <memory>
 #include <cstdint>
+#include <optional>
+#include <span>
 #include <vector>
 #include <string_view>
 
 #include "asiortc/task.hpp"
+#include "asiortc/detail/async_wait.hpp"
 
 namespace asiortc {
 
 struct data_channel;
 
 struct data_channel_message {
+    data_channel_message() = default;
     data_channel_message(std::vector<uint8_t> data, bool binary)
         : _data{std::move(data)}, _binary{binary} {}
 
@@ -61,9 +65,44 @@ struct data_channel_interface {
 
     asiortc::task<bool> open();
 
+    template <class Token> auto open(Token &&token) {
+        return utils::async_wait<void()>(
+            this->open() | stdexec::then([](bool ret) {
+                if (!ret)
+                    throw std::runtime_error{"data_channel open failed"};
+            }),
+            std::forward<Token>(token));
+    }
+
     asiortc::task<bool> send(std::string_view text);
     asiortc::task<bool> send(std::span<const uint8_t> data);
+
+    template <class Token> auto send(std::string_view text, Token &&token) {
+        return utils::async_wait<void()>(
+            this->send(text) | stdexec::then([](bool ret) {
+                if (!ret)
+                    throw std::runtime_error{"data_channel send failed"};
+            }),
+            std::forward<Token>(token));
+    }
+
+    template <class Token>
+    auto send(std::span<const uint8_t> data, Token &&token) {
+        return utils::async_wait<void()>(
+            this->send(data) | stdexec::then([](bool ret) {
+                if (!ret)
+                    throw std::runtime_error{"data_channel send failed"};
+            }),
+            std::forward<Token>(token));
+    }
+
     asiortc::task<data_channel_message> read();
+
+    template <class Token> auto read(Token &&token) {
+        return utils::async_wait<void(data_channel_message)>(
+            this->read(), std::forward<Token>(token));
+    }
+
     void close() noexcept;
 
     operator bool() const noexcept { return _impl != nullptr; }

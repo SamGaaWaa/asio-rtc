@@ -12,6 +12,11 @@
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <boost/beast/websocket.hpp>
+#include <boost/asio/use_awaitable.hpp>
+#include <boost/asio/co_spawn.hpp>
+#include <boost/asio/steady_timer.hpp>
+#include <boost/asio/detached.hpp>
+#include <boost/asio/bind_cancellation_slot.hpp>
 namespace asioice {
 namespace net = boost::asio;
 }
@@ -25,8 +30,6 @@ namespace websocket = beast::websocket;
 #include "json.hpp"
 
 #include <chrono>
-#include <exec/async_scope.hpp>
-#include <exec/start_detached.hpp>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -38,33 +41,30 @@ using ws_t = websocket::stream<beast::tcp_stream>;
 using ws_ptr = std::shared_ptr<ws_t>;
 static const uint16_t PORT = 8086;
 
-static task<void> ws_send(ws_t &ws, const nlohmann::json &msg) {
+static net::awaitable<void> ws_send(ws_t &ws, const nlohmann::json &msg) {
     ws.text(true);
     auto d = msg.dump();
     auto [ec, n] = co_await ws.async_write(net::buffer(d),
-                                           net::as_tuple(utils::use_sender));
+                                           net::as_tuple(net::use_awaitable));
     if (ec)
         std::cerr << "ws err: " << ec.message() << '\n';
 }
 
-static task<nlohmann::json> ws_recv(ws_t &ws) {
+static net::awaitable<nlohmann::json> ws_recv(ws_t &ws) {
     beast::flat_buffer buf;
-    auto [ec, n] =
-        co_await ws.async_read(buf, net::as_tuple(utils::use_sender));
-    if (ec)
-        throw std::runtime_error("ws recv: " + ec.message());
+    co_await ws.async_read(buf, net::use_awaitable);
     auto j = nlohmann::json::parse(beast::buffers_to_string(buf.data()));
-    buf.clear();
     co_return j;
 }
 
-static task<void> sfu_session(net::io_context &ctx, ws_ptr ws) {
-    asioice::utils::scope_guard on_exit(
-        []() noexcept { std::cout << "sfu_session: exited\n"; });
+static net::awaitable<void> sfu_session(net::io_context &ctx, ws_ptr ws) {
+    net::cancellation_signal signal;
+    asioice::utils::scope_guard on_exit([&]() noexcept {
+        std::cout << "sfu_session: exited\n";
+        signal.emit(net::cancellation_type::all);
+    });
     std::cout << "WS connected (asiortc sfu demo)\n";
 
-    utils::scheduler sched{ctx};
-    exec::async_scope scope;
     net::steady_timer timer(ctx);
 
     peer_connection conn(
@@ -82,13 +82,51 @@ static task<void> sfu_session(net::io_context &ctx, ws_ptr ws) {
         co_return;
     }
 
-    auto track = std::make_shared<queue_track>(
+    auto send_track = std::make_shared<queue_track>(
         media_description::make_default(media_format::h264));
-    auto tr = conn.add_transceiver(track, {.direction = sdp_direction::sendrecv,
-                                           .streams = {"sfu-loopback"}});
+    auto tr =
+        conn.add_transceiver(send_track, {.direction = sdp_direction::sendrecv,
+                                          .streams = {"sfu-loopback"}});
     std::cout << "Created video sendrecv mid=" << tr.mid() << '\n';
 
-    co_await conn.set_remote_description(std::move(offer));
+    std::shared_ptr<media_track> recv_track = nullptr;
+    conn.on_track([&recv_track](rtp_receiver_interface,
+                                std::shared_ptr<media_track> track,
+                                std::vector<std::string> streams,
+                                rtp_transceiver_interface transceiver) {
+        recv_track = std::move(track);
+    });
+    co_await conn.set_remote_description(std::move(offer), net::use_awaitable);
+    if (!recv_track) {
+        std::cerr << "No tracks\n";
+        co_return;
+    }
+
+    net::co_spawn(
+        ctx,
+        [](auto recv_track, auto send_track) -> net::awaitable<void> {
+            asioice::utils::scope_guard on_exit(
+                []() noexcept { std::cout << "forward loop exit\n"; });
+            auto state = co_await net::this_coro::cancellation_state;
+            co_await net::this_coro::throw_if_cancelled(true);
+            while (state.cancelled() == net::cancellation_type::none) {
+                std::vector<media_frame> frames = co_await recv_track->recv(
+                    {}, net::bind_cancellation_slot(state.slot(),
+                                                    net::use_awaitable));
+                for (auto &frame : frames) {
+                    send_track->push_frame(std::move(frame));
+                }
+            }
+        }(recv_track, send_track),
+        net::bind_cancellation_slot(signal.slot(), [](std::exception_ptr p) {
+            if (!p)
+                return;
+            try {
+                std::rethrow_exception(p);
+            } catch (const std::exception &e) {
+                std::cerr << "Exception in forward loop: " << e.what() << '\n';
+            }
+        }));
 
     std::cout << "Transceiver: direction="
               << (tr.direction() == sdp_direction::sendrecv   ? "sendrecv"
@@ -99,10 +137,8 @@ static task<void> sfu_session(net::io_context &ctx, ws_ptr ws) {
               << " sender_ssrc=" << tr.sender().ssrc(0)
               << " num_streams=" << tr.sender().num_streams() << '\n';
 
-    {
-        auto answer = co_await conn.create_answer();
-        co_await conn.set_local_description(std::move(answer));
-    }
+    co_await conn.set_local_description(
+        co_await conn.create_answer(net::use_awaitable), net::use_awaitable);
 
     std::cout << "After set_local: direction="
               << (tr.direction() == sdp_direction::sendrecv   ? "sendrecv"
@@ -116,7 +152,7 @@ static task<void> sfu_session(net::io_context &ctx, ws_ptr ws) {
                                       ice_gathering_state_t::complete;
              ++i) {
             timer.expires_after(std::chrono::seconds(1));
-            co_await timer.async_wait(utils::use_sender);
+            co_await timer.async_wait(net::use_awaitable);
         }
     }
 
@@ -133,63 +169,29 @@ static task<void> sfu_session(net::io_context &ctx, ws_ptr ws) {
 
     while (conn.connection_state() != connection_state_t::connected &&
            conn.connection_state() != connection_state_t::failed)
-        co_await conn.on_connection_state_changed();
+        co_await conn.on_connection_state_changed(net::use_awaitable);
     if (conn.connection_state() != connection_state_t::connected) {
         std::cerr << "Failed to connect\n";
         co_return;
     }
     std::cout << "Connected: SFU forwarding active (ctrl-c to stop)\n";
 
-    // SFU forwarding: intercept RTP, forward via connection
-    asioice::async_queue<rtp::rtp_packet> send_queue(128);
-    auto send = tr.sender();
-    std::cout << "SFU: sender ssrc=" << send.ssrc(0)
-              << " num_streams=" << send.num_streams() << '\n';
-
-    tr.receiver().on_rtp([&](rtp::rtp_packet &pkt) {
-        send_queue.push(pkt);
-        return false;
-    });
-
-    scope.spawn(stdexec::starts_on(
-        sched,
-        [](peer_connection conn, rtp_sender_interface send,
-           auto &send_queue) -> task<void> {
-            while (true) {
-                auto pkt = send_queue.try_pop();
-                if (!pkt) {
-                    pkt = co_await send_queue.async_pop_stoppable();
-                    if (!pkt)
-                        co_return;
-                }
-                co_await conn.send_rtp(send, *pkt);
-            }
-        }(std::move(conn), send, send_queue)));
-
     timer.expires_after(std::chrono::seconds(3600));
-    auto [ec] = co_await timer.async_wait(net::as_tuple(utils::use_sender));
-    if (ec)
-        co_return;
+    co_await timer.async_wait(net::use_awaitable);
 
-    scope.request_stop();
-    co_await (scope.on_empty() | stdexec::continues_on(sched));
     std::cout << "Done\n";
 }
 
-static task<void> http_session(net::io_context &ctx,
-                               net::ip::tcp::socket sock) {
+static net::awaitable<void> http_session(net::io_context &ctx,
+                                         net::ip::tcp::socket sock) {
     beast::flat_buffer buf;
     http::request<http::string_body> req;
-    auto [ec, n] = co_await http::async_read(sock, buf, req, utils::use_sender);
-    if (ec) {
-        std::cerr << "http read: " << ec.message() << '\n';
-        co_return;
-    }
+    auto n = co_await http::async_read(sock, buf, req, net::use_awaitable);
 
     if (websocket::is_upgrade(req)) {
         auto ws = std::make_shared<ws_t>(beast::tcp_stream(std::move(sock)));
         auto [wec] =
-            co_await ws->async_accept(req, net::as_tuple(utils::use_sender));
+            co_await ws->async_accept(req, net::as_tuple(net::use_awaitable));
         if (wec) {
             std::cerr << "ws accept: " << wec.message() << '\n';
             co_return;
@@ -199,36 +201,32 @@ static task<void> http_session(net::io_context &ctx,
         http::response<http::string_body> res{http::status::ok, req.version()};
         res.set(http::field::content_type, "text/html");
         static constexpr char html[] = {
-#embed "index.html"
+#embed "sfu.html"
             , '\0'};
         res.body() = html;
         res.prepare_payload();
         auto [sec, _] = co_await http::async_write(
-            sock, res, net::as_tuple(utils::use_sender));
+            sock, res, net::as_tuple(net::use_awaitable));
         if (sec)
             std::cerr << "http write: " << sec.message() << '\n';
     }
 }
 
-static task<void> listener(net::io_context &ctx) {
+static net::awaitable<void> listener(net::io_context &ctx) {
     net::ip::tcp::acceptor acc(
         ctx, net::ip::tcp::endpoint(net::ip::make_address("127.0.0.1"), PORT));
     std::cout << "Server on ws://localhost:" << PORT << "/ws\n";
     while (true) {
         auto [ec, sock] =
-            co_await acc.async_accept(net::as_tuple(utils::use_sender));
+            co_await acc.async_accept(net::as_tuple(net::use_awaitable));
         if (ec)
             continue;
-        exec::start_detached(http_session(ctx, std::move(sock)));
+        net::co_spawn(ctx, http_session(ctx, std::move(sock)), net::detached);
     }
 }
 
 int main() {
-    std::cout << std::unitbuf;
     net::io_context ctx;
-    asiortc::set_logger(std::make_shared<logger_interface>(log_level::trace),
-                        ctx.get_executor());
-    exec::start_detached(
-        stdexec::starts_on(utils::scheduler{ctx}, listener(ctx)));
+    net::co_spawn(ctx, listener(ctx), net::detached);
     ctx.run();
 }

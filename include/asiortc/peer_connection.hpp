@@ -21,8 +21,10 @@ namespace asiortc {
 namespace net = boost::asio;
 }
 #endif
+#include <boost/compat/move_only_function.hpp>
 
 #include "asiortc/detail/use_sender.hpp"
+#include "asiortc/detail/async_wait.hpp"
 #include "asiortc/candidate.hpp"
 #include "asiortc/configuration.hpp"
 #include "asiortc/media_track.hpp"
@@ -100,26 +102,88 @@ struct peer_connection {
 
     asiortc::task<std::unique_ptr<session_description_interface>>
     create_offer();
+
+    template <class Token> auto create_offer(Token &&token) {
+        return utils::async_wait<void(
+            std::unique_ptr<session_description_interface>)>(
+            this->create_offer(), std::forward<Token>(token));
+    }
+
     asiortc::task<std::unique_ptr<session_description_interface>>
     create_answer();
+
+    template <class Token> auto create_answer(Token &&token) {
+        return utils::async_wait<void(
+            std::unique_ptr<session_description_interface>)>(
+            this->create_answer(), std::forward<Token>(token));
+    }
+
     asiortc::task<void>
     set_local_description(std::unique_ptr<session_description_interface> desc);
+
+    template <class Token>
+    auto
+    set_local_description(std::unique_ptr<session_description_interface> desc,
+                          Token &&token) {
+        return utils::async_wait<void()>(
+            this->set_local_description(std::move(desc)),
+            std::forward<Token>(token));
+    }
+
     asiortc::task<void>
     set_remote_description(std::unique_ptr<session_description_interface> desc);
+
+    template <class Token>
+    auto
+    set_remote_description(std::unique_ptr<session_description_interface> desc,
+                           Token &&token) {
+        return utils::async_wait<void()>(
+            this->set_remote_description(std::move(desc)),
+            std::forward<Token>(token));
+    }
+
     const session_description_interface *local_description() const noexcept;
 
     bool can_trickle_ice_candidates() const noexcept;
     asiortc::task<void> add_ice_candidate(candidate c);
     asiortc::task<void> add_ice_candidate();
 
+    template <class Token> auto add_ice_candidate(candidate c, Token &&token) {
+        return utils::async_wait<void()>(this->add_ice_candidate(std::move(c)),
+                                         std::forward<Token>(token));
+    }
+
+    template <class Token>
+        requires(!std::same_as<Token, candidate>)
+    auto add_ice_candidate(Token &&token) {
+        return utils::async_wait<void()>(this->add_ice_candidate(),
+                                         std::forward<Token>(token));
+    }
+
     ice_connection_state_t ice_connection_state() const noexcept;
     asiortc::task<void> on_ice_connection_state_changed();
+
+    template <class Token> auto on_ice_connection_state_changed(Token &&token) {
+        return utils::async_wait<void()>(
+            this->on_ice_connection_state_changed(),
+            std::forward<Token>(token));
+    }
 
     ice_gathering_state_t ice_gathering_state() const noexcept;
     asiortc::task<void> on_ice_gathering_state_changed();
 
+    template <class Token> auto on_ice_gathering_state_changed(Token &&token) {
+        return utils::async_wait<void()>(this->on_ice_gathering_state_changed(),
+                                         std::forward<Token>(token));
+    }
+
     connection_state_t connection_state() const noexcept;
     asiortc::task<void> on_connection_state_changed();
+
+    template <class Token> auto on_connection_state_changed(Token &&token) {
+        return utils::async_wait<void()>(this->on_connection_state_changed(),
+                                         std::forward<Token>(token));
+    }
 
     signaling_state_t signaling_state() const noexcept;
 
@@ -178,19 +242,27 @@ struct peer_connection {
                stdexec::upon_error([](auto err) { return false; });
     }
 
+    template <class Token>
+    auto send_rtp(const rtp_sender_interface &sender,
+                  const rtp::rtp_packet &pkt, Token &&token) {
+        return utils::async_wait<void(bool)>(this->send_rtp(sender, pkt),
+                                             std::forward<Token>(token));
+    }
+
     data_channel_interface
     create_data_channel(std::string label, data_channel_options options = {});
 
-    using on_track_cb = std::function<void(
+    using on_track_cb = boost::compat::move_only_function<void(
         rtp_receiver_interface, std::shared_ptr<media_track>,
         std::vector<std::string> msids, rtp_transceiver_interface)>;
     void on_track(on_track_cb cb);
 
-    using on_data_channel_cb = std::function<void(data_channel_interface)>;
+    using on_data_channel_cb =
+        boost::compat::move_only_function<void(data_channel_interface)>;
     void on_data_channel(on_data_channel_cb cb);
 
-    using on_candidates_cb =
-        std::function<void(std::vector<asiortc::candidate>)>;
+    using on_candidates_cb = boost::compat::move_only_function<void(
+        std::vector<asiortc::candidate>)>;
     void on_candidates(on_candidates_cb cb);
 
     rtc_stats_report get_stats() const;

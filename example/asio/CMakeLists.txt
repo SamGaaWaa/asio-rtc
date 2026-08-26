@@ -1,0 +1,5 @@
+add_executable(asio_datachannel datachannel.cpp)
+target_link_libraries(asio_datachannel PRIVATE asiortc_test_flags)
+
+add_executable(asio_sfu sfu.cpp)
+target_link_libraries(asio_sfu PRIVATE asiortc_test_flags)

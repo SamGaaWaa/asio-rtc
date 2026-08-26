@@ -59,9 +59,7 @@ constexpr ::asiortc::error_code exception_to_error_code(std::exception_ptr ex) {
         return e.code();
     }
 #endif
-    catch (const std::runtime_error &e) {
-        return __make_error_code(::asiortc::errc::invalid_argument);
-    } catch (...) {
+    catch (...) {
         return __make_error_code(::asiortc::errc::io_error);
     }
     return {};
@@ -106,6 +104,7 @@ struct async_wait_op_state {
 
     void start() noexcept { stdexec::start(this->operation); }
 
+    std::shared_ptr<async_wait_op_state> self{};
     Handler handler;
     ::asiortc::net::executor_work_guard<Executor> work_guard;
     allocator_t alloc;
@@ -116,10 +115,8 @@ struct async_wait_op_state {
 
 template <class Executor, class Sndr, class Handler, class... Args>
 void asio_receiver<Executor, Sndr, Handler, Args...>::destroy() noexcept {
-    auto *op = _op;
-    op_allocator_type alloc{op->alloc};
-    std::allocator_traits<op_allocator_type>::destroy(alloc, op);
-    std::allocator_traits<op_allocator_type>::deallocate(alloc, op, 1);
+    auto ptr = std::move(_op->self);
+    (void)ptr;
 }
 
 template <class Executor, class Sndr, class Handler, class... Args>
@@ -197,24 +194,17 @@ inline void async_wait_impl(S &&sndr, Callback &&cb) {
     auto alloc = ::asiortc::net::get_associated_allocator(cb);
     op_allocator_type op_alloc{alloc};
 
-    op_state_t *p =
-        std::allocator_traits<op_allocator_type>::allocate(op_alloc, 1);
-    try {
-        std::allocator_traits<op_allocator_type>::construct(
-            op_alloc, p, ex, std::forward<S>(sndr), std::forward<Callback>(cb),
-            alloc);
-    } catch (...) {
-        std::allocator_traits<op_allocator_type>::deallocate(op_alloc, p, 1);
-        throw;
-    }
+    auto p = std::allocate_shared<op_state_t>(
+        op_alloc, ex, std::forward<S>(sndr), std::forward<Callback>(cb), alloc);
+    p->self = p;
 
     auto slot = ::asiortc::net::get_associated_cancellation_slot(p->handler);
     if (slot.is_connected()) {
         p->slot = std::move(slot);
-        p->slot.assign(
-            [source = &p->stop_source](::asiortc::net::cancellation_type) {
-                source->request_stop();
-            });
+        p->slot.assign([pp = p](::asiortc::net::cancellation_type) mutable {
+            auto p = std::move(pp);
+            p->stop_source.request_stop();
+        });
     }
     p->start();
 }

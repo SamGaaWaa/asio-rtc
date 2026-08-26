@@ -7,7 +7,9 @@
 #include <string>
 #include <vector>
 
+#include "asiortc/config.hpp"
 #include "asiortc/task.hpp"
+#include "asiortc/detail/async_wait.hpp"
 #include "asiortc/media_frame.hpp"
 
 namespace asiortc {
@@ -55,6 +57,12 @@ struct media_track {
 
     virtual asiortc::task<std::vector<media_frame>>
     recv(std::span<const encode_target> layers) = 0;
+
+    template <class Token>
+    auto recv(std::span<const encode_target> layers, Token &&token) {
+        return utils::async_wait<void(std::vector<media_frame>)>(
+            this->recv(layers), std::forward<Token>(token));
+    }
 };
 
 } // namespace asiortc

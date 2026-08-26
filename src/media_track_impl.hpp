@@ -39,12 +39,12 @@ struct media_track_impl : public media_track {
     recv(std::span<const encode_target> layers) override;
 
     void push_frame(rtp::rtp_packet pkt);
-    void push_rtx_packet(rtp::rtp_packet pkt);
-    asiortc::task<std::optional<rtp::rtp_packet>> recv_packet();
 
   private:
     friend struct connection_impl;
     friend struct rtp_receiver;
+
+    asiortc::task<std::vector<rtp::rtp_packet>> recv_packet();
 
     sdp_rtpmap _codec;
     std::string _id;

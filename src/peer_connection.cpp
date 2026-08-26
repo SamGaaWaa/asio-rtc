@@ -45,29 +45,36 @@ void peer_connection::set_logger(std::shared_ptr<logger_interface> logger) {
     ::asiortc::set_logger(std::move(logger), get_executor());
 }
 
-task<std::unique_ptr<session_description_interface>> peer_connection::create_offer() {
+asiortc::task<std::unique_ptr<session_description_interface>>
+peer_connection::create_offer() {
     throw_if_nullptr(_impl, "create_offer");
     return _impl->create_offer();
 }
 
-task<std::unique_ptr<session_description_interface>> peer_connection::create_answer() {
+asiortc::task<std::unique_ptr<session_description_interface>>
+peer_connection::create_answer() {
     throw_if_nullptr(_impl, "create_answer");
     return _impl->create_answer();
 }
 
-task<void> peer_connection::set_local_description(std::unique_ptr<session_description_interface> desc) {
+asiortc::task<void> peer_connection::set_local_description(
+    std::unique_ptr<session_description_interface> desc) {
     throw_if_nullptr(_impl, "set_local_description");
     throw_if_nullptr(desc, "set_local_description: desc == nullptr");
-    return _impl->set_local_description(std::unique_ptr<session_description>(static_cast<session_description*>(desc.release())));
+    return _impl->set_local_description(std::unique_ptr<session_description>(
+        static_cast<session_description *>(desc.release())));
 }
 
-task<void> peer_connection::set_remote_description(std::unique_ptr<session_description_interface> desc) {
+asiortc::task<void> peer_connection::set_remote_description(
+    std::unique_ptr<session_description_interface> desc) {
     throw_if_nullptr(_impl, "set_remote_description");
     throw_if_nullptr(desc, "set_remote_description: desc == nullptr");
-    return _impl->set_remote_description(std::unique_ptr<session_description>(static_cast<session_description*>(desc.release())));
+    return _impl->set_remote_description(std::unique_ptr<session_description>(
+        static_cast<session_description *>(desc.release())));
 }
 
-const session_description_interface *peer_connection::local_description() const noexcept {
+const session_description_interface *
+peer_connection::local_description() const noexcept {
     throw_if_nullptr(_impl, "local_description");
     return _impl->local_description();
 }
@@ -89,10 +96,11 @@ asiortc::task<void> peer_connection::add_ice_candidate() {
         throw std::runtime_error("add_ice_candidate failed");
 }
 
-void peer_connection::on_candidates(on_candidates_cb cb) {
+void peer_connection::on_candidates(peer_connection::on_candidates_cb cb) {
     throw_if_nullptr(_impl, "on_candidates");
     _impl->on_candidates(
-        [cb = std::move(cb)](std::span<const asioice::candidate> cands) {
+        [cb =
+             std::move(cb)](std::span<const asioice::candidate> cands) mutable {
             std::vector<candidate> out;
             out.reserve(cands.size());
             for (const auto &c : cands)
@@ -226,12 +234,13 @@ peer_connection::create_data_channel(std::string label,
     return iface;
 }
 
-void peer_connection::on_track(on_track_cb cb) {
+void peer_connection::on_track(peer_connection::on_track_cb cb) {
     throw_if_nullptr(_impl, "on_track");
-    _impl->on_track([cb = std::move(cb)](std::shared_ptr<rtp_receiver> recv,
-                                         std::shared_ptr<media_track> track,
-                                         std::vector<std::string> msids,
-                                         std::shared_ptr<rtp_transceiver> tr) {
+    _impl->on_track([cb = std::move(cb)](
+                        std::shared_ptr<rtp_receiver> recv,
+                        std::shared_ptr<media_track> track,
+                        std::vector<std::string> msids,
+                        std::shared_ptr<rtp_transceiver> tr) mutable {
         rtp_receiver_interface ri;
         ri._impl = std::move(recv);
         rtp_transceiver_interface ti;
@@ -240,9 +249,9 @@ void peer_connection::on_track(on_track_cb cb) {
     });
 }
 
-void peer_connection::on_data_channel(on_data_channel_cb cb) {
+void peer_connection::on_data_channel(peer_connection::on_data_channel_cb cb) {
     throw_if_nullptr(_impl, "on_data_channel");
-    _impl->on_remote_channel([cb = std::move(cb)](auto dc) {
+    _impl->on_remote_channel([cb = std::move(cb)](auto dc) mutable {
         data_channel_interface iface;
         iface._impl = std::move(dc);
         cb(std::move(iface));

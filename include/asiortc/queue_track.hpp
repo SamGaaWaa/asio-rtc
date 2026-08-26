@@ -63,9 +63,7 @@ struct queue_track : media_track {
     void push_frame(media_frame frame) {
         if (_state == track_state::ended)
             return;
-        if (_desc.format == media_format::unknown)
-            _desc.format = frame.format;
-        else if (_desc.format != frame.format)
+        if (_desc.format != frame.format)
             throw std::runtime_error("queue_track: format mismatch");
         _q.push(std::move(frame));
     }

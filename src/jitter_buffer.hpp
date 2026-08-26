@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <map>
 #include <optional>
+#include <vector>
 
 #include "asiortc/rtp.hpp"
 
@@ -17,7 +18,7 @@ class jitter_buffer {
 
     void push(rtp::rtp_packet pkt);
 
-    std::optional<rtp::rtp_packet> pop_frame();
+    std::vector<rtp::rtp_packet> pop_frame();
 
     void reset();
 

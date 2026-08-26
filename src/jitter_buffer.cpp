@@ -34,9 +34,9 @@ void jitter_buffer::push(rtp::rtp_packet pkt) {
     _sorted.emplace(extended, std::move(pkt));
 }
 
-std::optional<rtp::rtp_packet> jitter_buffer::pop_frame() {
+std::vector<rtp::rtp_packet> jitter_buffer::pop_frame() {
     if (_sorted.empty())
-        return std::nullopt;
+        return {};
 
     auto it = _sorted.begin();
     uint32_t extended = it->first;
@@ -49,7 +49,7 @@ std::optional<rtp::rtp_packet> jitter_buffer::pop_frame() {
             _next_extended_seq = extended;
             _gap_start.reset();
         } else {
-            return std::nullopt;
+            return {};
         }
     }
 
@@ -75,7 +75,7 @@ std::optional<rtp::rtp_packet> jitter_buffer::pop_frame() {
     // is still incomplete → wait for more packets.
     if (it != _sorted.end() && it->first == next_expected &&
         it->second.timestamp == ts) {
-        return std::nullopt;
+        return {};
     }
 
     // For video: if we reached end of buffer, we may have only partial
@@ -85,29 +85,24 @@ std::optional<rtp::rtp_packet> jitter_buffer::pop_frame() {
         if (!_video_wait_start)
             _video_wait_start = now;
         if (now - *_video_wait_start < _max_delay / 2)
-            return std::nullopt;
+            return {};
     } else {
         _video_wait_start.reset();
     }
 
-    // Frame is complete — concatenate all payloads
-    std::vector<uint8_t> joined;
+    // Frame is complete — collect the individual packets (preserving each
+    // packet's payload boundary) so callers can do codec-aware reassembly.
+    std::vector<rtp::rtp_packet> packets;
     auto erase_end = it;
     it = _sorted.begin();
     while (it != erase_end) {
-        auto &p = it->second.payload;
-        joined.insert(joined.end(), p.begin(), p.end());
+        packets.push_back(std::move(it->second));
         ++it;
     }
 
-    rtp::rtp_packet assembled;
-    assembled.sequence_number = static_cast<uint16_t>(_next_extended_seq);
-    assembled.timestamp = ts;
-    assembled.payload = std::move(joined);
-
     _next_extended_seq = next_expected;
     _sorted.erase(_sorted.begin(), erase_end);
-    return assembled;
+    return packets;
 }
 
 void jitter_buffer::reset() {

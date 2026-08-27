@@ -203,7 +203,8 @@ inline void async_wait_impl(S &&sndr, Callback &&cb) {
         p->slot = std::move(slot);
         p->slot.assign([pp = p](::asiortc::net::cancellation_type) mutable {
             auto p = std::move(pp);
-            p->stop_source.request_stop();
+            if (p)
+                p->stop_source.request_stop();
         });
     }
     p->start();

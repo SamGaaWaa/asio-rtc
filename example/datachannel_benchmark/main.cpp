@@ -1,5 +1,6 @@
 #include "asiortc.hpp"
 #include "asioice/detail/on_scope_empty.hpp"
+#include "asioice/detail/stack_resource.hpp"
 
 #include "hash.hpp"
 
@@ -71,20 +72,33 @@ task<void> wait_connected(peer_connection &conn, net::io_context &ctx) {
 
 task<void> sender_task(data_channel_interface ch, const bench_config &cfg,
                        uint64_t messages, double *elapsed) {
+    std::vector<char> mem(16 * 1024);
+    asioice::utils::stack_resource res{mem.data(), mem.size()};
+    std::pmr::polymorphic_allocator<std::byte> alloc{&res};
+
+    const auto bind_alloc = [&alloc]<class S>(S &&s) {
+        return stdexec::write_env(std::forward<S>(s),
+                                  stdexec::prop{stdexec::get_allocator, alloc});
+    };
+
     boost::hash2::sha2_256 hash;
     std::vector<uint8_t> buf(cfg.message_size);
+    asioice::hash::random_bytes(buf.data(), buf.size());
 
     auto start = std::chrono::steady_clock::now();
     for (uint64_t i = 0; i < messages; ++i) {
-        asioice::hash::random_bytes(buf.data(), buf.size());
+        std::memcpy(buf.data(), &i, sizeof(i));
         hash.update(buf.data(), buf.size());
-        if (!co_await ch.send(std::span<const uint8_t>{buf}))
+        if (!co_await bind_alloc(ch.send(std::span<const uint8_t>{buf})))
             throw std::runtime_error{"send failed"};
     }
 
     send_hash = hash.result();
     auto end = std::chrono::steady_clock::now();
     *elapsed = std::chrono::duration<double>(end - start).count();
+
+    std::cout << "Allocated in heap: " << res.allocated_in_heap() << '\n';
+    std::cout << "Allocated in stack: " << res.allocated_in_stack() << '\n';
 }
 
 task<void> receiver_task(data_channel_interface ch, uint64_t messages,

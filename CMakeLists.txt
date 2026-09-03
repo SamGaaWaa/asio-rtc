@@ -43,6 +43,7 @@ add_subdirectory(third_party/libsrtp)
     src/candidate.cpp
     src/peer_connection.cpp
     src/connection_impl.cpp
+    src/data_channel.cpp
     src/rtp_interfaces.cpp
     src/srtp_transport.cpp
     src/rtp.cpp

@@ -7,6 +7,8 @@
 #include <vector>
 #include <string_view>
 
+#include <exec/function.hpp>
+
 #include "asiortc/task.hpp"
 #include "asiortc/detail/async_wait.hpp"
 
@@ -74,8 +76,10 @@ struct data_channel_interface {
             std::forward<Token>(token));
     }
 
-    asiortc::task<bool> send(std::string_view text);
-    asiortc::task<bool> send(std::span<const uint8_t> data);
+    exec::function<bool(std::string_view)> send(std::string_view text);
+
+    exec::function<bool(std::span<const uint8_t>)>
+    send(std::span<const uint8_t> data);
 
     template <class Token> auto send(std::string_view text, Token &&token) {
         return utils::async_wait<void()>(
@@ -96,7 +100,7 @@ struct data_channel_interface {
             std::forward<Token>(token));
     }
 
-    asiortc::task<data_channel_message> read();
+    exec::function<data_channel_message()> read();
 
     template <class Token> auto read(Token &&token) {
         return utils::async_wait<void(data_channel_message)>(

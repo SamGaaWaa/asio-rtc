@@ -349,21 +349,30 @@ asiortc::task<bool> data_channel_interface::open() {
     return _impl->open();
 }
 
-asiortc::task<bool> data_channel_interface::send(std::string_view text) {
+exec::function<bool(std::string_view)>
+data_channel_interface::send(std::string_view text) {
     assert(_impl != nullptr);
-    co_return co_await _impl->send_text(text);
+    return exec::function<bool(std::string_view)>{
+        std::move(text),
+        [this](std::string_view text) { return _impl->send_text(text); }};
 }
 
-asiortc::task<bool>
+exec::function<bool(std::span<const uint8_t>)>
 data_channel_interface::send(std::span<const uint8_t> data) {
     assert(_impl != nullptr);
-    co_return co_await _impl->send_binary(data);
+    return exec::function<bool(std::span<const uint8_t>)>{
+        std::move(data), [this](std::span<const uint8_t> data) {
+            return _impl->send_binary(data);
+        }};
 }
 
-asiortc::task<data_channel_message> data_channel_interface::read() {
+exec::function<data_channel_message()> data_channel_interface::read() {
     assert(_impl != nullptr);
-    auto msg = co_await _impl->read();
-    co_return data_channel_message(std::move(msg.data), msg.binary);
+    return exec::function<data_channel_message()>{[this] {
+        return _impl->read() | stdexec::then([](auto msg) {
+                   return data_channel_message(std::move(msg.data), msg.binary);
+               });
+    }};
 }
 
 void data_channel_interface::close() noexcept {

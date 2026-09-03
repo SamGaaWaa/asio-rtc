@@ -4,6 +4,9 @@
 #include "asioice/basic_agent.hpp"
 #include "asioice/data_channel.hpp"
 #include "asioice/task.hpp"
+#include "asioice/dtls_transport.hpp"
+#include "asioice/data_channel.hpp"
+#include "asiortc/task.hpp"
 
 #if ASIOICE_USE_BOOST_ASIO > 0
 #include <boost/asio/ip/udp.hpp>

@@ -91,15 +91,14 @@ static std::string random_username() {
 static task<std::string> read_line(auto &ctx) {
     std::string line;
     auto guard = net::make_work_guard(ctx);
-    co_await stdexec::starts_on(asiortc::utils::scheduler{ctx},
-                                net::post(
-                                    [&line] {
-                                        std::getline(std::cin, line);
-                                        if (!line.empty() &&
-                                            line.back() == '\r')
-                                            line.pop_back();
-                                    },
-                                    stdin_pool, asiortc::utils::use_sender));
+    co_await (net::post(
+                  [&line] {
+                      std::getline(std::cin, line);
+                      if (!line.empty() && line.back() == '\r')
+                          line.pop_back();
+                  },
+                  stdin_pool, asiortc::utils::use_sender) |
+              stdexec::continues_on(asiortc::utils::scheduler{ctx}));
     co_return line;
 }
 
@@ -129,10 +128,11 @@ static task<std::string> read_sdp(auto &ctx) {
 
 static task<void> wait_ice_gather(peer_connection &conn, net::io_context &ctx) {
     net::steady_timer t(ctx);
-    for (int i = 0; i < 20 && conn.ice_gathering_state() !=
+    for (int i = 0; i < 10 && conn.ice_gathering_state() !=
                                   ice_gathering_state_t::complete;
          ++i) {
         t.expires_after(std::chrono::seconds(1));
+        std::cout << "Gathering candidates...\n";
         co_await t.async_wait(asiortc::utils::use_sender);
     }
 }
@@ -151,7 +151,12 @@ static task<void> chat_session(net::io_context &ctx) try {
         username = random_username();
     std::cout << "\nYou: " << GREEN << username << RESET << '\n';
 
-    peer_connection conn(ctx.get_executor());
+    peer_connection conn(
+        ctx.get_executor(),
+        configuration{.ice_servers{
+            .urls{"stun:stun.l.google.com:19302", "stun:stun.miwifi.com:3478",
+                  "stun:stun.chat.bilibili.com:3478",
+                  "stun:stun.aliyun.com:3478", "stun:stun.qq.com:3478"}}});
     data_channel_interface chat_ch;
 
     if (!is_offer) {
@@ -265,7 +270,7 @@ int main(int argc, char **argv) {
             return std::string_view{cmd} == "--log";
         })) {
         asiortc::set_logger(std::make_shared<asiortc::logger_interface>(
-                                asiortc::log_level::info),
+                                asiortc::log_level::trace),
                             ctx.get_executor());
     }
     std::cout << std::unitbuf;

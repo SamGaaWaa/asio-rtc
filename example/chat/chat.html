@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8">
+    <title>asiortc chat</title>
+    <style>
+        body {
+            font-family: monospace;
+            max-width: 720px;
+            margin: 0 auto;
+            padding: 1em;
+            background: #111;
+            color: #ddd;
+        }
+
+        h1 {
+            font-size: 1.2em;
+        }
+
+        textarea {
+            width: 100%;
+            height: 10em;
+            font-family: monospace;
+            font-size: 0.8em;
+            background: #222;
+            color: #ccc;
+            border: 1px solid #444;
+        }
+
+        input {
+            font-family: monospace;
+            background: #222;
+            color: #ccc;
+            border: 1px solid #444;
+            padding: 0.3em;
+        }
+
+        button {
+            font-family: monospace;
+            background: #333;
+            color: #ddd;
+            border: 1px solid #555;
+            padding: 0.3em 0.8em;
+            cursor: pointer;
+        }
+
+        button:disabled {
+            opacity: 0.4;
+            cursor: default;
+        }
+
+        #log {
+            height: 16em;
+            overflow-y: auto;
+            background: #1a1a1a;
+            border: 1px solid #444;
+            padding: 0.5em;
+            white-space: pre-wrap;
+        }
+
+        .peer {
+            color: #7ec8ff;
+        }
+
+        .me {
+            color: #8fe28f;
+        }
+
+        .sys {
+            color: #999;
+        }
+
+        .row {
+            margin: 0.6em 0;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>asiortc chat</h1>
+    <div id="status" class="sys">pick a role to start</div>
+
+    <div class="row">
+        <button id="offer-btn">Offer</button>
+        <button id="answer-btn">Answer</button>
+        <input id="username" placeholder="username (optional)">
+    </div>
+
+    <div class="row">
+        <div>Local SDP (copy to peer):</div>
+        <textarea id="local-sdp" readonly></textarea>
+        <button id="copy-local">Copy</button>
+    </div>
+
+    <div class="row">
+        <div>Remote SDP (paste from peer):</div>
+        <textarea id="remote-sdp"></textarea>
+        <button id="apply-remote" disabled>Apply remote SDP</button>
+    </div>
+
+    <div class="row">
+        <div id="log"></div>
+        <div style="margin-top:0.4em">
+            <input id="msg" placeholder="type a message" style="width:60%">
+            <button id="send" disabled>Send</button>
+        </div>
+    </div>
+
+    <script>
+        const $ = id => document.getElementById(id);
+        const log = (cls, text) => {
+            const el = document.createElement('div');
+            el.className = cls;
+            el.textContent = text;
+            $('log').appendChild(el);
+            $('log').scrollTop = $('log').scrollHeight;
+        };
+        const setStatus = s => { $('status').textContent = s; };
+
+        function enc(s) {
+            let r = '';
+            for (const c of s) {
+                if (c === '\r') r += '\\r';
+                else if (c === '\n') r += '\\n';
+                else if (c === '\\') r += '\\\\';
+                else r += c;
+            }
+            return r;
+        }
+
+        function dec(s) {
+            let r = '';
+            for (let i = 0; i < s.length; i++) {
+                if (s[i] === '\\' && i + 1 < s.length) {
+                    if (s[i + 1] === 'r') { r += '\r'; i++; }
+                    else if (s[i + 1] === 'n') { r += '\n'; i++; }
+                    else if (s[i + 1] === '\\') { r += '\\'; i++; }
+                    else r += s[i];
+                } else r += s[i];
+            }
+            return r;
+        }
+
+        let pc = null;
+        let dc = null;
+        let role = null;
+
+        function iceGatheringComplete(pc) {
+            return Promise.race([new Promise(r => {
+                if (pc.iceGatheringState === 'complete') return r();
+                pc.onicegatheringstatechange = () => {
+                    if (pc.iceGatheringState === 'complete') r();
+                };
+            }), new Promise(r => {
+                setTimeout(() => {
+                    r();
+                }, 10 * 1000)
+            })])
+        }
+
+        function bindDataChannel(channel) {
+            dc = channel;
+            dc.onopen = () => {
+                setStatus('datachannel open');
+                $('send').disabled = false;
+                log('sys', 'Chat started.');
+            };
+            dc.onmessage = e => log('peer', 'peer: ' + e.data);
+            dc.onclose = () => setStatus('datachannel closed');
+        }
+
+        async function start(r) {
+            role = r;
+            setStatus(r + ' — setting up...');
+            $('offer-btn').disabled = true;
+            $('answer-btn').disabled = true;
+
+            pc = new RTCPeerConnection({
+                iceServers: [{
+                    urls: [
+                        "stun:stun.l.google.com:19302",
+                        "stun:stun.miwifi.com:3478",
+                        "stun:stun.chat.bilibili.com:3478",
+                        "stun:stun.aliyun.com:3478",
+                        "stun:stun.qq.com:3478"
+                    ]
+                }]
+            });
+            pc.onconnectionstatechange = () => {
+                const s = pc.connectionState;
+                setStatus('conn: ' + s);
+                if (s === 'connected') log('sys', 'Connected!');
+                else if (s === 'failed') log('sys', 'Connection failed');
+            };
+
+            if (role === 'offer') {
+                bindDataChannel(pc.createDataChannel('chat'));
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+                await iceGatheringComplete(pc);
+                $('local-sdp').value = enc(pc.localDescription.sdp);
+                $('apply-remote').disabled = false;
+                log('sys', 'Copy the offer to the answer side, then paste its answer.');
+            } else {
+                pc.ondatachannel = e => bindDataChannel(e.channel);
+                log('sys', 'Paste the offer below, then click Apply remote SDP.');
+            }
+            $('apply-remote').disabled = false;
+        }
+
+        async function applyRemote() {
+            const sdp = dec($('remote-sdp').value.trim());
+            if (!sdp) return;
+            const type = role === 'offer' ? 'answer' : 'offer';
+            await pc.setRemoteDescription({ type, sdp });
+            setStatus('remote ' + type + ' applied — waiting...');
+
+            if (role === 'answer') {
+                const answer = await pc.createAnswer();
+                await pc.setLocalDescription(answer);
+                await iceGatheringComplete(pc);
+                $('local-sdp').value = enc(pc.localDescription.sdp);
+                log('sys', 'Copy the answer back to the offer side.');
+            }
+        }
+
+        $('offer-btn').onclick = () => start('offer');
+        $('answer-btn').onclick = () => start('answer');
+
+        $('apply-remote').onclick = applyRemote;
+
+        $('copy-local').onclick = async () => {
+            await navigator.clipboard.writeText($('local-sdp').value);
+        };
+
+        $('send').onclick = () => {
+            const text = $('msg').value;
+            if (!text) return;
+            dc.send(text);
+            log('me', 'me: ' + text);
+            $('msg').value = '';
+        };
+        $('msg').onkeydown = e => { if (e.key === 'Enter') $('send').onclick(); };
+    </script>
+</body>
+
+</html>

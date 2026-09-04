@@ -14,3 +14,4 @@ clang-release-build
 example/file_frame/audio_frame
 example/file_frame/video_frame
 .vscode
+msvc-build/

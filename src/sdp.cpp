@@ -118,7 +118,7 @@ static sdp_origin parse_origin(std::string_view s) {
 static std::optional<uint8_t> parse_uint8(std::string_view s) {
     uint8_t v = 0;
     auto result = std::from_chars(s.data(), s.data() + s.size(), v);
-    if (result.ec == std::errc{} && result.ptr == std::end(s))
+    if (result.ec == std::errc{} && result.ptr == s.data() + s.size())
         return v;
     return std::nullopt;
 }
@@ -126,7 +126,7 @@ static std::optional<uint8_t> parse_uint8(std::string_view s) {
 static std::optional<uint16_t> parse_uint16(std::string_view s) {
     uint16_t v = 0;
     auto result = std::from_chars(s.data(), s.data() + s.size(), v);
-    if (result.ec == std::errc{} && result.ptr == std::end(s))
+    if (result.ec == std::errc{} && result.ptr == s.data() + s.size())
         return v;
     return std::nullopt;
 }
@@ -134,7 +134,7 @@ static std::optional<uint16_t> parse_uint16(std::string_view s) {
 static std::optional<uint32_t> parse_uint32(std::string_view s) {
     uint32_t v = 0;
     auto result = std::from_chars(s.data(), s.data() + s.size(), v);
-    if (result.ec == std::errc{} && result.ptr == std::end(s))
+    if (result.ec == std::errc{} && result.ptr == s.data() + s.size())
         return v;
     return std::nullopt;
 }
@@ -142,7 +142,7 @@ static std::optional<uint32_t> parse_uint32(std::string_view s) {
 static std::optional<uint64_t> parse_uint64(std::string_view s) {
     uint64_t v = 0;
     auto result = std::from_chars(s.data(), s.data() + s.size(), v);
-    if (result.ec == std::errc{} && result.ptr == std::end(s))
+    if (result.ec == std::errc{} && result.ptr == s.data() + s.size())
         return v;
     return std::nullopt;
 }
@@ -150,7 +150,7 @@ static std::optional<uint64_t> parse_uint64(std::string_view s) {
 static std::optional<double> parse_double(std::string_view s) {
     double v = 0.;
     auto result = std::from_chars(s.data(), s.data() + s.size(), v);
-    if (result.ec == std::errc{} && result.ptr == std::end(s))
+    if (result.ec == std::errc{} && result.ptr == s.data() + s.size())
         return v;
     return std::nullopt;
 }

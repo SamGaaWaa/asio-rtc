@@ -349,30 +349,28 @@ asiortc::task<bool> data_channel_interface::open() {
     return _impl->open();
 }
 
-exec::function<bool(std::string_view)>
-data_channel_interface::send(std::string_view text) {
+stdexec::task<bool, ::asioice::task_env>
+data_channel_interface::send(std::allocator_arg_t,
+                             std::pmr::polymorphic_allocator<std::byte> alloc,
+                             std::string_view text) {
     assert(_impl != nullptr);
-    return exec::function<bool(std::string_view)>{
-        std::move(text),
-        [this](std::string_view text) { return _impl->send_text(text); }};
+    co_return co_await _impl->send_text(text);
 }
 
-exec::function<bool(std::span<const uint8_t>)>
-data_channel_interface::send(std::span<const uint8_t> data) {
+stdexec::task<bool, ::asioice::task_env>
+data_channel_interface::send(std::allocator_arg_t,
+                             std::pmr::polymorphic_allocator<std::byte> alloc,
+                             std::span<const uint8_t> data) {
     assert(_impl != nullptr);
-    return exec::function<bool(std::span<const uint8_t>)>{
-        std::move(data), [this](std::span<const uint8_t> data) {
-            return _impl->send_binary(data);
-        }};
+    co_return co_await _impl->send_binary(data);
 }
 
-exec::function<data_channel_message()> data_channel_interface::read() {
+stdexec::task<data_channel_message, ::asioice::task_env>
+data_channel_interface::read(std::allocator_arg_t,
+                             std::pmr::polymorphic_allocator<std::byte> alloc) {
     assert(_impl != nullptr);
-    return exec::function<data_channel_message()>{[this] {
-        return _impl->read() | stdexec::then([](auto msg) {
-                   return data_channel_message(std::move(msg.data), msg.binary);
-               });
-    }};
+    auto msg = co_await _impl->read();
+    co_return data_channel_message(std::move(msg.data), msg.binary);
 }
 
 void data_channel_interface::close() noexcept {

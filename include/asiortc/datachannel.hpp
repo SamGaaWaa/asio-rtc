@@ -11,6 +11,8 @@
 
 #include "asiortc/task.hpp"
 #include "asiortc/detail/async_wait.hpp"
+#include "asioice/detail/task_env.hpp"
+#include "asioice/detail/with_allocator.hpp"
 
 namespace asiortc {
 
@@ -76,10 +78,29 @@ struct data_channel_interface {
             std::forward<Token>(token));
     }
 
-    exec::function<bool(std::string_view)> send(std::string_view text);
+    stdexec::task<bool, ::asioice::task_env>
+    send(std::allocator_arg_t, std::pmr::polymorphic_allocator<std::byte> alloc,
+         std::string_view text);
 
-    exec::function<bool(std::span<const uint8_t>)>
-    send(std::span<const uint8_t> data);
+    auto send(std::string_view text) {
+        return ::asioice::utils::with_allocator(
+            [text, this](auto alloc) {
+                return this->send(std::allocator_arg, std::move(alloc), text);
+            },
+            std::pmr::polymorphic_allocator<std::byte>{});
+    }
+
+    stdexec::task<bool, ::asioice::task_env>
+    send(std::allocator_arg_t, std::pmr::polymorphic_allocator<std::byte> alloc,
+         std::span<const uint8_t> data);
+
+    auto send(std::span<const uint8_t> data) {
+        return ::asioice::utils::with_allocator(
+            [data, this](auto alloc) {
+                return this->send(std::allocator_arg, std::move(alloc), data);
+            },
+            std::pmr::polymorphic_allocator<std::byte>{});
+    }
 
     template <class Token> auto send(std::string_view text, Token &&token) {
         return utils::async_wait<void()>(
@@ -100,7 +121,17 @@ struct data_channel_interface {
             std::forward<Token>(token));
     }
 
-    exec::function<data_channel_message()> read();
+    stdexec::task<data_channel_message, ::asioice::task_env>
+    read(std::allocator_arg_t,
+         std::pmr::polymorphic_allocator<std::byte> alloc);
+
+    auto read() {
+        return ::asioice::utils::with_allocator(
+            [this](auto alloc) {
+                return this->read(std::allocator_arg, std::move(alloc));
+            },
+            std::pmr::polymorphic_allocator<std::byte>{});
+    }
 
     template <class Token> auto read(Token &&token) {
         return utils::async_wait<void(data_channel_message)>(

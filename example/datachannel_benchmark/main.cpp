@@ -1,13 +1,14 @@
 #include "asiortc.hpp"
 #include "asioice/detail/on_scope_empty.hpp"
 #include "asioice/detail/stack_resource.hpp"
+#include "asioice/detail/scope_guard.hpp"
 
 #include "hash.hpp"
 
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/steady_timer.hpp>
 
-#include <boost/hash2/sha2.hpp>
+#include <boost/hash2/xxh3.hpp>
 
 #include <exec/async_scope.hpp>
 #include <exec/start_detached.hpp>
@@ -42,8 +43,8 @@ struct bench_result {
     std::size_t recv_bytes = 0;
 };
 
-boost::hash2::sha2_256::result_type send_hash;
-boost::hash2::sha2_256::result_type recv_hash;
+boost::hash2::xxh3_128::result_type send_hash;
+boost::hash2::xxh3_128::result_type recv_hash;
 
 task<void> wait_ice_gather(peer_connection &conn, net::io_context &ctx) {
     net::steady_timer t(ctx);
@@ -71,9 +72,13 @@ task<void> wait_connected(peer_connection &conn, net::io_context &ctx) {
 }
 
 task<void> sender_task(data_channel_interface ch, const bench_config &cfg,
-                       uint64_t messages, double *elapsed) {
+                       uint64_t messages, double *elapsed, auto &scope) {
+    asioice::utils::scope_guard on_exit([&]() noexcept {
+        std::cout << "sender_task exited\n";
+        // scope.request_stop();
+    });
     std::vector<char> mem(16 * 1024);
-    asioice::utils::stack_resource res{mem.data(), mem.size()};
+    asioice::utils::stack_resource res{mem.data(), mem.size(), "sender_task"};
     std::pmr::polymorphic_allocator<std::byte> alloc{&res};
 
     const auto bind_alloc = [&alloc]<class S>(S &&s) {
@@ -81,12 +86,14 @@ task<void> sender_task(data_channel_interface ch, const bench_config &cfg,
                                   stdexec::prop{stdexec::get_allocator, alloc});
     };
 
-    boost::hash2::sha2_256 hash;
+    boost::hash2::xxh3_128 hash;
     std::vector<uint8_t> buf(cfg.message_size);
     asioice::hash::random_bytes(buf.data(), buf.size());
 
     auto start = std::chrono::steady_clock::now();
     for (uint64_t i = 0; i < messages; ++i) {
+        if (ch.state() == data_channel_ready_state_t::closed)
+            co_return;
         std::memcpy(buf.data(), &i, sizeof(i));
         hash.update(buf.data(), buf.size());
         if (!co_await bind_alloc(ch.send(std::span<const uint8_t>{buf})))
@@ -103,10 +110,14 @@ task<void> sender_task(data_channel_interface ch, const bench_config &cfg,
 
 task<void> receiver_task(data_channel_interface ch, uint64_t messages,
                          bench_result *result) {
-    boost::hash2::sha2_256 hash;
+    asioice::utils::scope_guard on_exit(
+        []() noexcept { std::cout << "receiver_task exited\n"; });
+    boost::hash2::xxh3_128 hash;
 
     auto start = std::chrono::steady_clock::now();
     for (uint64_t i = 0; i < messages; ++i) {
+        if (ch.state() == data_channel_ready_state_t::closed)
+            co_return;
         auto msg = co_await ch.read();
         auto data = msg.binary_data();
         hash.update(data.data(), data.size());
@@ -179,9 +190,10 @@ task<void> benchmark(net::io_context &ctx, bench_config cfg) {
     scope.spawn(stdexec::starts_on(
         sched,
         [](data_channel_interface ch, bench_config cfg, uint64_t messages,
-           bench_result *result) -> task<void> {
-            co_await sender_task(ch, cfg, messages, &result->send_elapsed);
-        }(ch1, cfg, messages, &result)));
+           bench_result *result, auto &scope) -> task<void> {
+            co_await sender_task(ch, cfg, messages, &result->send_elapsed,
+                                 scope);
+        }(ch1, cfg, messages, &result, scope)));
     scope.spawn(
         stdexec::starts_on(sched,
                            [](data_channel_interface ch, uint64_t messages,

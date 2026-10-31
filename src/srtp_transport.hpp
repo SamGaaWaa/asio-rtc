@@ -39,7 +39,7 @@ class srtp_transport_base : public asioice::datagram_receiver {
     using on_new_ssrc_callback_type = boost::compat::move_only_function<bool(
         uint32_t, std::span<const uint8_t> data)>;
     using on_rtp_rtcp_packet_callback_type =
-        boost::compat::move_only_function<void(asioice::io_buffer_ptr)>;
+        boost::compat::move_only_function<void(asioice::io_buffer)>;
 
     static constexpr std::size_t MAX_ACTIVE_SSRCS = 32;
 
@@ -87,7 +87,7 @@ class srtp_transport_base : public asioice::datagram_receiver {
         uint8_t payload_type = packet[1];
         return (payload_type >= 200 && payload_type <= 204);
     }
-    bool datagram_received(asioice::io_buffer_ptr &buffer) override;
+    bool datagram_received(asioice::io_buffer &buffer) override;
 
     std::shared_ptr<srtp_init_guard> _init_guard;
 

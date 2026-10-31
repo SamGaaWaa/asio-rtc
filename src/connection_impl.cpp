@@ -1735,10 +1735,10 @@ rtc_stats_report connection_impl::get_stats() const {
     return report;
 }
 
-void connection_impl::do_on_rtp_rtcp_packet(asioice::io_buffer_ptr buf) {
+void connection_impl::do_on_rtp_rtcp_packet(asioice::io_buffer buf) {
     _rx_packets++;
-    _rx_bytes += buf->size();
-    auto pkt = rtp::rtp_packet::parse(buf->data(), buf->size());
+    _rx_bytes += buf.size();
+    auto pkt = rtp::rtp_packet::parse(buf.data(), buf.size());
     if (pkt) {
 
         _twcc.set_media_ssrc(pkt->ssrc);
@@ -1750,7 +1750,7 @@ void connection_impl::do_on_rtp_rtcp_packet(asioice::io_buffer_ptr buf) {
         dispatch_rtp(*pkt);
     } else {
         // Handle compound RTCP
-        auto cps = rtcp::parse_compound(buf->data(), buf->size());
+        auto cps = rtcp::parse_compound(buf.data(), buf.size());
         for (const auto &cp : cps) {
             if (cp.type == rtcp::packet_type::SR) {
                 auto ctx_it = _ssrc_set.find(cp.ssrc);

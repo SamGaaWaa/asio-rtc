@@ -279,30 +279,30 @@ std::size_t srtp_transport_base::max_protect_rtcp_overhead() noexcept {
     return SRTP_MAX_SRTCP_TRAILER_LEN;
 }
 
-bool srtp_transport_base::datagram_received(asioice::io_buffer_ptr &buffer) {
-    if (!buffer || buffer->size() < 8)
+bool srtp_transport_base::datagram_received(asioice::io_buffer &buffer) {
+    if (buffer.empty() || buffer.size() < 8)
         return false;
-    auto first_byte = *buffer->begin();
+    auto first_byte = *buffer.begin();
     if (first_byte < 128 || first_byte > 191)
         return false;
     if (_recv_session == nullptr) {
         // TODO: for now just discard it
         return true;
     }
-    auto data_span = std::span<uint8_t>(buffer->data(), buffer->size());
+    auto data_span = std::span<uint8_t>(buffer.data(), buffer.size());
 
     if (is_rtcp_packet(data_span)) {
         auto result = unprotect_rtcp(data_span, data_span);
         if (result.empty())
             return true;
-        buffer->consume_back(data_span.size() - result.size());
+        buffer.consume_back(data_span.size() - result.size());
 
         auto tmp = std::move(buffer);
         if (_on_rtp_rtcp_packet)
             _on_rtp_rtcp_packet(std::move(tmp));
         return true;
     }
-    if (buffer->size() < 12)
+    if (buffer.size() < 12)
         return false;
     if ((first_byte & 0xC0) != 0x80)
         return false;
@@ -331,7 +331,7 @@ bool srtp_transport_base::datagram_received(asioice::io_buffer_ptr &buffer) {
     if (result.empty())
         return true;
 
-    buffer->consume_back(data_span.size() - result.size());
+    buffer.consume_back(data_span.size() - result.size());
 
     auto tmp = std::move(buffer);
     if (_on_rtp_rtcp_packet)
